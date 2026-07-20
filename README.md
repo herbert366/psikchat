@@ -1,6 +1,6 @@
 # psikchat
 
-Mock visual de chat com memórias manuais na UI e backend local para memória semântica com SQLite.
+Interface de chat com memórias manuais na UI e backend local persistido em SQLite.
 
 ## Stack
 
@@ -30,6 +30,8 @@ npm run dev
 O comando inicia a API local e o frontend. Abra a URL mostrada pelo Vite.
 
 Para iniciar apenas a API, use `npm run dev:api`.
+
+O frontend depende da API local para carregar e gravar chats e memórias. Não há fallback em memória no app.
 
 ## Smoke test da memória
 

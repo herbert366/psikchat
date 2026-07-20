@@ -1,13 +1,16 @@
 import { useEffect, useRef, useState } from 'react'
 import type { FormEvent, KeyboardEvent } from 'react'
 import './App.css'
-import { clusterGroups, APP_CONFIG } from './config'
-import { appDataSource, isPromiseLike } from './dataSource'
-import type { AppSnapshot } from './dataSource'
-import type { Chat, Memory } from './mockDatabase'
+import { APP_CONFIG } from './config'
+import { appDataSource } from './dataSource'
+import type { AppDataSource, AppSnapshot, StateResult } from './dataSource'
+import type { Chat, Memory } from './appTypes'
 
 type View = 'chat' | 'memories'
 type MemorySort = 'updated-desc' | 'updated-asc' | 'created-desc' | 'created-asc' | 'usage-desc' | 'usage-asc' | 'feedback-desc' | 'feedback-asc'
+type MemoryCluster = { id: number; items: Memory[] }
+type QueuedMessage = { id: string; chatId: number; text: string }
+type OptimisticUserMessage = { id: string; chatId: number; text: string }
 
 function normalizeSearchText(value: string) {
   return value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLocaleLowerCase()
@@ -17,15 +20,84 @@ function resolveErrorMessage(error: unknown) {
   return error instanceof Error ? error.message : 'Algo falhou ao sincronizar os dados.'
 }
 
-function App() {
-  const [initialSnapshot] = useState<AppSnapshot>(() => appDataSource.getInitialSnapshot())
+function tokenizeText(value: string) {
+  return normalizeSearchText(value)
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .split(/\s+/)
+    .filter((token) => token.length > 2)
+}
+
+function lexicalSimilarity(first: string, second: string) {
+  const firstTokens = new Set(tokenizeText(first))
+  const secondTokens = new Set(tokenizeText(second))
+  if (firstTokens.size === 0 || secondTokens.size === 0) return 0
+
+  let intersection = 0
+  for (const token of firstTokens) {
+    if (secondTokens.has(token)) {
+      intersection += 1
+    }
+  }
+
+  return intersection / (firstTokens.size + secondTokens.size - intersection)
+}
+
+function cosineSimilarity(first: number[], second: number[]) {
+  if (first.length === 0 || second.length === 0 || first.length !== second.length) return 0
+
+  let dot = 0
+  let firstMagnitude = 0
+  let secondMagnitude = 0
+  for (let index = 0; index < first.length; index += 1) {
+    dot += first[index]! * second[index]!
+    firstMagnitude += first[index]! ** 2
+    secondMagnitude += second[index]! ** 2
+  }
+
+  if (firstMagnitude === 0 || secondMagnitude === 0) return 0
+  return dot / (Math.sqrt(firstMagnitude) * Math.sqrt(secondMagnitude))
+}
+
+function buildMemoryClusters(memories: Memory[]): MemoryCluster[] {
+  const remaining = [...memories]
+  const clusters: MemoryCluster[] = []
+
+  while (remaining.length > 0) {
+    const current = remaining.shift()
+    if (!current) break
+
+    const similarItems = remaining.filter((candidate) => Math.max(
+      lexicalSimilarity(current.text, candidate.text),
+      cosineSimilarity(current.embedding, candidate.embedding),
+    ) >= APP_CONFIG.memoryClusterSimilarityThreshold)
+
+    if (similarItems.length === 0) continue
+
+    const clusterItemIds = new Set([current.id, ...similarItems.map((item) => item.id)])
+    clusters.push({ id: current.id, items: [current, ...similarItems] })
+
+    for (let index = remaining.length - 1; index >= 0; index -= 1) {
+      if (clusterItemIds.has(remaining[index]!.id)) {
+        remaining.splice(index, 1)
+      }
+    }
+  }
+
+  return clusters
+}
+
+type AppProps = {
+  dataSource?: AppDataSource
+}
+
+function App({ dataSource = appDataSource }: AppProps) {
   const [view, setView] = useState<View>('chat')
   const [isChatsOpen, setIsChatsOpen] = useState(true)
-  const [chats, setChats] = useState<Chat[]>(initialSnapshot.chats)
-  const [activeChat, setActiveChat] = useState<number | null>(initialSnapshot.chats[0]?.id ?? null)
+  const [chats, setChats] = useState<Chat[]>([])
+  const [activeChat, setActiveChat] = useState<number | null>(null)
   const [message, setMessage] = useState('')
   const [memory, setMemory] = useState('')
-  const [memories, setMemories] = useState<Memory[]>(initialSnapshot.memories)
+  const [memories, setMemories] = useState<Memory[]>([])
   const [isMemoryOpen, setIsMemoryOpen] = useState(false)
   const [editingMemoryId, setEditingMemoryId] = useState<number | null>(null)
   const [memoryMessageId, setMemoryMessageId] = useState<string | null>(null)
@@ -37,9 +109,14 @@ function App() {
   const [editingChatId, setEditingChatId] = useState<number | null>(null)
   const [chatTitle, setChatTitle] = useState('')
   const [appError, setAppError] = useState<string | null>(null)
-  const [isBootstrapping, setIsBootstrapping] = useState(!appDataSource.supportsSyncSnapshot)
+  const [isBootstrapping, setIsBootstrapping] = useState(true)
   const [isSendingMessage, setIsSendingMessage] = useState(false)
+  const [sendingChatId, setSendingChatId] = useState<number | null>(null)
+  const [optimisticUserMessage, setOptimisticUserMessage] = useState<OptimisticUserMessage | null>(null)
+  const [queuedMessages, setQueuedMessages] = useState<QueuedMessage[]>([])
   const chatTitleInputRef = useRef<HTMLInputElement>(null)
+  const activeChatRef = useRef<number | null>(null)
+  const queuedMessagesRef = useRef<QueuedMessage[]>([])
 
   const searchableText = normalizeSearchText(memorySearch.trim())
   const filteredMemories = memories.filter((memoryItem) => normalizeSearchText(memoryItem.text).includes(searchableText))
@@ -53,9 +130,9 @@ function App() {
   const totalTablePages = Math.max(1, Math.ceil(sortedMemories.length / APP_CONFIG.tablePageSize))
   const currentMemoryIds = new Set(memories.map((memoryItem) => memoryItem.id))
   const memoriesById = new Map(memories.map((memoryItem) => [memoryItem.id, memoryItem]))
-  const visibleClusters = clusterGroups
+  const visibleClusters = buildMemoryClusters(memories)
     .map((cluster) => ({ ...cluster, items: cluster.items.filter((item) => currentMemoryIds.has(item.id)) }))
-    .filter((cluster) => cluster.items.length > 0)
+    .filter((cluster) => cluster.items.length > 1)
   const totalClusterPages = Math.max(1, Math.ceil(visibleClusters.length / APP_CONFIG.clusterPageSize))
 
   const currentTablePage = Math.min(tablePage, totalTablePages - 1)
@@ -68,6 +145,14 @@ function App() {
     : orderedChats[0]?.id ?? null
   const activeChatRecord = chats.find((chat) => chat.id === currentActiveChatId) ?? orderedChats[0] ?? null
   const messages = activeChatRecord?.messages ?? []
+  const visibleMessages = optimisticUserMessage?.chatId === currentActiveChatId
+    ? [...messages, { id: optimisticUserMessage.id, author: 'user' as const, text: optimisticUserMessage.text }]
+    : messages
+  const queuedMessagesForActiveChat = queuedMessages.filter((item) => item.chatId === currentActiveChatId)
+
+  useEffect(() => {
+    activeChatRef.current = currentActiveChatId
+  }, [currentActiveChatId])
 
   useEffect(() => {
     if (editingChatId) {
@@ -77,10 +162,11 @@ function App() {
   }, [editingChatId])
 
   useEffect(() => {
-    if (appDataSource.supportsSyncSnapshot) return
+    let isActive = true
 
-    void (appDataSource.loadState() as Promise<AppSnapshot>)
+    void dataSource.loadState()
       .then((snapshot) => {
+        if (!isActive) return
         setChats(snapshot.chats)
         setMemories(snapshot.memories)
         setActiveChat((current) => current && snapshot.chats.some((chat) => chat.id === current)
@@ -88,9 +174,20 @@ function App() {
           : snapshot.chats[0]?.id ?? null)
         setAppError(null)
       })
-      .catch((error) => setAppError(resolveErrorMessage(error)))
-      .finally(() => setIsBootstrapping(false))
-  }, [])
+      .catch((error) => {
+        if (!isActive) return
+        setAppError(resolveErrorMessage(error))
+      })
+      .finally(() => {
+        if (isActive) {
+          setIsBootstrapping(false)
+        }
+      })
+
+    return () => {
+      isActive = false
+    }
+  }, [dataSource])
 
   function applySnapshot(snapshot: AppSnapshot, preferredChatId: number | null = currentActiveChatId) {
     setChats(snapshot.chats)
@@ -104,8 +201,8 @@ function App() {
     setActiveChat(snapshot.chats[0]?.id ?? null)
   }
 
-  function syncStateOperation<T extends { state: AppSnapshot }>(
-    result: T | Promise<T>,
+  function syncStateOperation<T extends StateResult>(
+    result: Promise<T>,
     options: { preferredChatId?: number | null; clearError?: boolean; onSuccess?: (value: T) => void; trackSending?: boolean } = {},
   ) {
     const applyResult = (value: T) => {
@@ -116,23 +213,65 @@ function App() {
       options.onSuccess?.(value)
     }
 
-    if (isPromiseLike(result)) {
-      if (options.trackSending) {
-        setIsSendingMessage(true)
-      }
-
-      void result
-        .then((value) => applyResult(value))
-        .catch((error) => setAppError(resolveErrorMessage(error)))
-        .finally(() => {
-          if (options.trackSending) {
-            setIsSendingMessage(false)
-          }
-        })
-      return
+    if (options.trackSending) {
+      setIsSendingMessage(true)
     }
 
-    applyResult(result)
+    void result
+      .then((value) => applyResult(value))
+      .catch((error) => setAppError(resolveErrorMessage(error)))
+      .finally(() => {
+        if (options.trackSending) {
+          setIsSendingMessage(false)
+        }
+      })
+  }
+
+  function updateQueuedMessages(updater: (current: QueuedMessage[]) => QueuedMessage[]) {
+    setQueuedMessages((current) => {
+      const next = updater(current)
+      queuedMessagesRef.current = next
+      return next
+    })
+  }
+
+  function takeNextQueuedMessage() {
+    const [nextMessage, ...rest] = queuedMessagesRef.current
+    if (!nextMessage) return null
+
+    queuedMessagesRef.current = rest
+    setQueuedMessages(rest)
+    return nextMessage
+  }
+
+  function startMessageRequest(chatId: number, text: string) {
+    setAppError(null)
+    setMessage('')
+    setMemoryMessageId(null)
+    setIsSendingMessage(true)
+    setSendingChatId(chatId)
+    setOptimisticUserMessage({
+      id: `pending-user-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      chatId,
+      text,
+    })
+
+    void dataSource.sendUserMessage(chatId, text)
+      .then((value) => {
+        applySnapshot(value.state, activeChatRef.current)
+        setAppError(null)
+      })
+      .catch((error) => setAppError(resolveErrorMessage(error)))
+      .finally(() => {
+        setIsSendingMessage(false)
+        setSendingChatId(null)
+        setOptimisticUserMessage(null)
+
+        const nextMessage = takeNextQueuedMessage()
+        if (nextMessage) {
+          startMessageRequest(nextMessage.chatId, nextMessage.text)
+        }
+      })
   }
 
   function sendMessage(event: FormEvent<HTMLFormElement>) {
@@ -141,11 +280,18 @@ function App() {
     if (!text) return
 
     if (!currentActiveChatId) return
-    syncStateOperation(appDataSource.sendUserMessage(currentActiveChatId, text), {
-      preferredChatId: currentActiveChatId,
-      onSuccess: () => setMessage(''),
-      trackSending: true,
-    })
+
+    if (isSendingMessage) {
+      updateQueuedMessages((current) => [...current, {
+        id: `queued-user-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        chatId: currentActiveChatId,
+        text,
+      }])
+      setMessage('')
+      return
+    }
+
+    startMessageRequest(currentActiveChatId, text)
   }
 
   function createMemory(event: FormEvent<HTMLFormElement>) {
@@ -153,7 +299,7 @@ function App() {
     const text = memory.trim()
     if (!text) return
 
-    syncStateOperation(appDataSource.createMemory(text), {
+    syncStateOperation(dataSource.createMemory(text), {
       onSuccess: () => {
         setMemory('')
         setIsMemoryOpen(false)
@@ -165,7 +311,7 @@ function App() {
     event.preventDefault()
     const text = memory.trim()
     if (!text || editingMemoryId === null) return
-    syncStateOperation(appDataSource.updateMemory(editingMemoryId, text), {
+    syncStateOperation(dataSource.updateMemory(editingMemoryId, text), {
       onSuccess: () => {
         setMemory('')
         setEditingMemoryId(null)
@@ -181,13 +327,13 @@ function App() {
   }
 
   function deleteMemory(id: number) {
-    syncStateOperation(appDataSource.deleteMemory(id), { preferredChatId: currentActiveChatId })
+    syncStateOperation(dataSource.deleteMemory(id), { preferredChatId: currentActiveChatId })
     setClusterPage((page) => Math.min(page, Math.max(0, Math.ceil(visibleClusters.length / APP_CONFIG.clusterPageSize) - 1)))
   }
 
   function rateAssistantMessage(messageId: string, rating: -1 | 1) {
     if (!currentActiveChatId) return
-    syncStateOperation(appDataSource.rateAssistantMessage(currentActiveChatId, messageId, rating), { preferredChatId: currentActiveChatId })
+    syncStateOperation(dataSource.rateAssistantMessage(currentActiveChatId, messageId, rating), { preferredChatId: currentActiveChatId })
   }
 
   function navigate(target: View) {
@@ -211,7 +357,7 @@ function App() {
   function saveChatRename() {
     const title = chatTitle.trim()
     if (!title || !editingChatId) return
-    syncStateOperation(appDataSource.renameChat(editingChatId, title), {
+    syncStateOperation(dataSource.renameChat(editingChatId, title), {
       preferredChatId: currentActiveChatId,
       onSuccess: () => {
         setEditingChatId(null)
@@ -233,27 +379,30 @@ function App() {
   }
 
   function toggleChatPinned(chatId: number) {
-    syncStateOperation(appDataSource.toggleChatPinned(chatId), {
+    syncStateOperation(dataSource.toggleChatPinned(chatId), {
       preferredChatId: currentActiveChatId,
       onSuccess: () => setOpenChatMenuId(null),
     })
   }
 
   function deleteChat(chatId: number) {
-    syncStateOperation(appDataSource.deleteChat(chatId), {
+    syncStateOperation(dataSource.deleteChat(chatId), {
       preferredChatId: currentActiveChatId === chatId ? null : currentActiveChatId,
       onSuccess: () => setOpenChatMenuId(null),
     })
   }
 
   function startNewChat() {
-    syncStateOperation(appDataSource.createChat(), {
+    syncStateOperation(dataSource.createChat(), {
       onSuccess: ({ chat }) => {
         setMessage('')
         setMemoryMessageId(null)
         if (chat) {
           setActiveChat(chat.id)
         }
+        updateQueuedMessages(() => [])
+        setOptimisticUserMessage(null)
+        setSendingChatId(null)
         navigate('chat')
       },
     })
@@ -372,7 +521,7 @@ function App() {
               {appError && (
                 <p className="chat-status error" role="alert">{appError}</p>
               )}
-              {messages.map((item) => {
+              {visibleMessages.map((item) => {
                 const relatedMemories = (item.memoryIds ?? [])
                   .map((memoryId) => memoriesById.get(memoryId))
                   .filter((memoryItem): memoryItem is Memory => Boolean(memoryItem))
@@ -452,6 +601,15 @@ function App() {
                   </article>
                 )
               })}
+              {isSendingMessage && sendingChatId === currentActiveChatId && (
+                <article className="message assistant typing" aria-label="Assistente digitando">
+                  <div className="typing-dots" aria-hidden="true">
+                    <span />
+                    <span />
+                    <span />
+                  </div>
+                </article>
+              )}
             </div>
 
             <form className="composer" onSubmit={sendMessage}>
@@ -464,9 +622,15 @@ function App() {
                 placeholder="Escreva sua mensagem..."
                 aria-label="Mensagem"
                 maxLength={APP_CONFIG.maxCaracteresMemoryContext}
+                disabled={!currentActiveChatId}
               />
-              <button type="submit" disabled={isSendingMessage}>{isSendingMessage ? 'Enviando...' : 'Enviar'}</button>
+              <button type="submit" disabled={!currentActiveChatId || !message.trim()}>{isSendingMessage ? 'Agendar' : 'Enviar'}</button>
             </form>
+            {queuedMessagesForActiveChat.length > 0 && (
+              <p className="composer-queue-status">
+                {queuedMessagesForActiveChat.length} mensagem{queuedMessagesForActiveChat.length > 1 ? 'ens' : ''} aguardando envio.
+              </p>
+            )}
 
           </>
         ) : (
@@ -555,30 +719,32 @@ function App() {
 
             <section className="clusters" aria-label="Agrupamentos de memorias">
               <header className="clusters-header">
-                <h2>Memorias similares (&gt; 0,9)</h2>
-                <p>Agrupamentos sugeridos para navegacao rapida.</p>
+                <h2>Memorias relacionadas</h2>
+                <p>Agrupamentos sugeridos a partir das memorias salvas no SQLite.</p>
               </header>
               <div className="cluster-grid">
-                {paginatedClusters.map((cluster) => (
+                {paginatedClusters.length > 0 ? paginatedClusters.map((cluster) => (
                   <article className="cluster-card" key={cluster.id}>
                     <span className="cluster-count">{cluster.items.length} memorias</span>
                     <ul>
                        {cluster.items.map((item) => (
                          <li key={item.id} className="cluster-item">
-                           <span className="cluster-item-text">{memoriesById.get(item.id)?.text ?? item.text}</span>
-                           <span className="cluster-item-actions">
-                             <button type="button" aria-label="Editar memoria" onClick={() => openMemoryEditor(memoriesById.get(item.id) ?? memories[0])}>
-                               <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-                                 <path d="M15.4998 5.50067L18.3282 8.3291M13 21H21M3 21.0004L3.04745 20.6683C3.21536 19.4929 3.29932 18.9052 3.49029 18.3565C3.65975 17.8697 3.89124 17.4067 4.17906 16.979C4.50341 16.497 4.92319 16.0772 5.76274 15.2377L17.4107 3.58969C18.1918 2.80865 19.4581 2.80864 20.2392 3.58969C21.0202 4.37074 21.0202 5.63707 20.2392 6.41812L8.37744 18.2798C7.61579 19.0415 7.23497 19.4223 6.8012 19.7252C6.41618 19.994 6.00093 20.2167 5.56398 20.3887C5.07171 20.5824 4.54375 20.6889 3.48793 20.902L3 21.0004Z" stroke="#ffffff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-                               </svg>
-                             </button>
-                            <button type="button" aria-label="Apagar memoria" onClick={() => deleteMemory(item.id)}>✕</button>
-                          </span>
-                        </li>
-                      ))}
-                    </ul>
-                  </article>
-                ))}
+                            <span className="cluster-item-text">{item.text}</span>
+                            <span className="cluster-item-actions">
+                              <button type="button" aria-label="Editar memoria" onClick={() => openMemoryEditor(item)}>
+                                <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                                  <path d="M15.4998 5.50067L18.3282 8.3291M13 21H21M3 21.0004L3.04745 20.6683C3.21536 19.4929 3.29932 18.9052 3.49029 18.3565C3.65975 17.8697 3.89124 17.4067 4.17906 16.979C4.50341 16.497 4.92319 16.0772 5.76274 15.2377L17.4107 3.58969C18.1918 2.80865 19.4581 2.80864 20.2392 3.58969C21.0202 4.37074 21.0202 5.63707 20.2392 6.41812L8.37744 18.2798C7.61579 19.0415 7.23497 19.4223 6.8012 19.7252C6.41618 19.994 6.00093 20.2167 5.56398 20.3887C5.07171 20.5824 4.54375 20.6889 3.48793 20.902L3 21.0004Z" stroke="#ffffff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                                </svg>
+                              </button>
+                             <button type="button" aria-label="Apagar memoria" onClick={() => deleteMemory(item.id)}>✕</button>
+                           </span>
+                         </li>
+                       ))}
+                     </ul>
+                   </article>
+                )) : (
+                  <p className="chat-status">Nenhum agrupamento sugerido.</p>
+                )}
               </div>
               <div className="pagination" role="group" aria-label="Paginacao dos agrupamentos">
                 <button type="button" disabled={currentClusterPage === 0} onClick={() => setClusterPage((p) => p - 1)}>Anterior</button>

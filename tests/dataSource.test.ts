@@ -1,26 +1,46 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { createResilientApiDataSource } from '../src/dataSource'
-import { db } from '../src/mockDatabase'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { createApiDataSource } from '../src/dataSource'
+
+function createJsonResponse(body: unknown, ok = true, status = 200) {
+  return {
+    ok,
+    status,
+    async json() {
+      return body
+    },
+  }
+}
+
+afterEach(() => {
+  vi.unstubAllGlobals()
+})
 
 describe('apiDataSource', () => {
-  beforeEach(() => {
-    db.reset()
-  })
+  it('maps frontend operations to the SQLite API routes', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(createJsonResponse({ chats: [], memories: [] }))
+      .mockResolvedValueOnce(createJsonResponse({ chat: null, state: { chats: [], memories: [] } }))
 
-  afterEach(() => {
-    vi.unstubAllGlobals()
-  })
-
-  it('keeps the application usable with local data when the API is offline', async () => {
-    const fetchMock = vi.fn().mockRejectedValue(new TypeError('Failed to fetch'))
     vi.stubGlobal('fetch', fetchMock)
-    const dataSource = createResilientApiDataSource()
+    const dataSource = createApiDataSource('http://localhost:8787')
 
-    expect(dataSource.getInitialSnapshot().chats).not.toHaveLength(0)
-    await expect(dataSource.loadState()).resolves.toEqual({ chats: db.chats(), memories: db.memories() })
+    await dataSource.loadState()
+    await dataSource.createChat('Disponivel no sqlite')
 
-    const result = await dataSource.createChat('Disponivel sem API')
-    expect(result.chat?.title).toBe('Disponivel sem API')
-    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(fetchMock).toHaveBeenNthCalledWith(1, 'http://localhost:8787/api/state', expect.objectContaining({
+      headers: expect.objectContaining({ 'Content-Type': 'application/json' }),
+    }))
+    expect(fetchMock).toHaveBeenNthCalledWith(2, 'http://localhost:8787/api/chats', expect.objectContaining({
+      method: 'POST',
+      body: JSON.stringify({ title: 'Disponivel no sqlite' }),
+      headers: expect.objectContaining({ 'Content-Type': 'application/json' }),
+    }))
+  })
+
+  it('surfaces connection failures instead of masking them with local state', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('Failed to fetch')))
+    const dataSource = createApiDataSource('http://localhost:8787')
+
+    await expect(dataSource.loadState()).rejects.toThrow('Failed to fetch')
   })
 })

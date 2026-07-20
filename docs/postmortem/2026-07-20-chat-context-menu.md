@@ -6,7 +6,7 @@ A sidebar precisava oferecer tres acoes por conversa: `Renomear`, `Fixar` e `Exc
 
 ## Estado original
 
-Cada conversa era um unico `<button>`, sem estado de menu, sem operacoes de chat no mock database e sem suporte a chats fixados.
+Cada conversa era um unico `<button>`, sem estado de menu, sem operacoes de chat persistidas e sem suporte a chats fixados.
 
 ## Primeiro sinal de problema
 
@@ -24,7 +24,7 @@ O problema nao era o estado React nem o `z-index`. O menu estava sendo cortado p
 
 O menu passou a ser lateral, com largura de `230px`, padding maior, fundo `#343434`, bordas de `16px` e sombra. O clipping foi removido de `.chat-list-item`, `.chat-list` e `.sidebar`, permitindo que o popup avance para a area principal.
 
-As operacoes foram mantidas no mock local:
+As operacoes passaram a usar a base SQLite local:
 
 - `renameChat` atualiza o titulo;
 - `toggleChatPinned` alterna o estado e ordena fixados no topo;

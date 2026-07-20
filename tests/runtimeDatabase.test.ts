@@ -5,94 +5,43 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { createRuntimeDatabase } from '../server/runtimeDatabase.mjs'
+import { createTestLlmClient } from './testLlmClient'
 
 type RuntimeDatabase = ReturnType<typeof createRuntimeDatabase>
 
 let runtimeDb: RuntimeDatabase | null = null
 let dbPath: string | null = null
 
-function buildEmbedding(text: string) {
-  const vector = Array.from({ length: 8 }, () => 0)
-  const normalized = text.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase()
-  for (let index = 0; index < normalized.length; index += 1) {
-    vector[index % vector.length] += normalized.charCodeAt(index)
-  }
-  return vector
-}
-
-function createJsonResponse(body: unknown) {
-  return {
-    ok: true,
-    status: 200,
-    async json() {
-      return body
-    },
-    async text() {
-      return JSON.stringify(body)
-    },
+function removeIfExists(filePath: string | null) {
+  if (filePath && fs.existsSync(filePath)) {
+    fs.unlinkSync(filePath)
   }
 }
 
-function createFetchStub() {
-  return async (url: string | URL | Request, init?: RequestInit) => {
-    const pathname = typeof url === 'string'
-      ? new URL(url).pathname
-      : url instanceof URL
-        ? url.pathname
-        : new URL(url.url).pathname
+function createEmptyRuntimeDatabase() {
+  dbPath = path.join(os.tmpdir(), `psikchat-runtime-${Date.now()}-${Math.random().toString(16).slice(2)}.sqlite`)
+  runtimeDb = createRuntimeDatabase({
+    dbPath,
+    llmClient: createTestLlmClient(),
+    seedData: { chats: [], memories: [] },
+  })
 
-    const body = JSON.parse(String(init?.body ?? '{}')) as {
-      input?: string
-      messages?: Array<{ content: string }>
-    }
-
-    if (pathname.endsWith('/embeddings')) {
-      return createJsonResponse({ data: [{ embedding: buildEmbedding(body.input ?? '') }] })
-    }
-
-    if (pathname.endsWith('/chat/completions')) {
-      const prompt = (body.messages ?? []).map((message) => message.content).join('\n')
-      if (prompt.includes('Retorne apenas um array JSON de strings')) {
-        if (/bob/i.test(prompt) && /cachorro/i.test(prompt)) {
-          return createJsonResponse({ choices: [{ message: { content: '["Cachorro: Bob"]' } }] })
-        }
-
-        return createJsonResponse({ choices: [{ message: { content: '[]' } }] })
-      }
-
-      if (/qual o nome do meu cachorro\?/i.test(prompt) && /cachorro: bob/i.test(prompt)) {
-        return createJsonResponse({ choices: [{ message: { content: 'O nome do seu cachorro e Bob.' } }] })
-      }
-
-      if (/meu cachorro se chama bob/i.test(prompt)) {
-        return createJsonResponse({ choices: [{ message: { content: 'Vou guardar que o nome do seu cachorro e Bob.' } }] })
-      }
-
-      return createJsonResponse({ choices: [{ message: { content: 'Resposta generica.' } }] })
-    }
-
-    throw new Error(`Rota nao tratada no fetch stub: ${pathname}`)
-  }
+  return runtimeDb
 }
 
 afterEach(() => {
   runtimeDb?.close()
   runtimeDb = null
 
-  if (dbPath && fs.existsSync(dbPath)) {
-    fs.unlinkSync(dbPath)
-  }
+  removeIfExists(dbPath)
+  removeIfExists(dbPath ? `${dbPath}-shm` : null)
+  removeIfExists(dbPath ? `${dbPath}-wal` : null)
   dbPath = null
 })
 
 describe('runtimeDatabase', () => {
   it('cria memorias a partir da conversa e as reutiliza numa resposta posterior', async () => {
-    dbPath = path.join(os.tmpdir(), `psikchat-runtime-${Date.now()}.sqlite`)
-    runtimeDb = createRuntimeDatabase({
-      dbPath,
-      fetchImpl: createFetchStub(),
-      seedData: { chats: [], memories: [] },
-    })
+    runtimeDb = createEmptyRuntimeDatabase()
 
     await runtimeDb.initialize()
     const { chat } = await runtimeDb.createChat('Teste de memoria')
@@ -110,12 +59,7 @@ describe('runtimeDatabase', () => {
   })
 
   it('preserva uma memoria quando recebe uma atualizacao vazia', async () => {
-    dbPath = path.join(os.tmpdir(), `psikchat-runtime-${Date.now()}.sqlite`)
-    runtimeDb = createRuntimeDatabase({
-      dbPath,
-      fetchImpl: createFetchStub(),
-      seedData: { chats: [], memories: [] },
-    })
+    runtimeDb = createEmptyRuntimeDatabase()
 
     await runtimeDb.initialize()
     await runtimeDb.createMemory('Prefere exemplos')
@@ -124,5 +68,49 @@ describe('runtimeDatabase', () => {
     await runtimeDb.updateMemory(memory.id, '   ')
 
     expect(runtimeDb.memories()[0]?.text).toBe('Prefere exemplos')
+  })
+
+  it('remove links de memoria de todos os chats que a referenciavam', async () => {
+    dbPath = path.join(os.tmpdir(), `psikchat-runtime-${Date.now()}-${Math.random().toString(16).slice(2)}.sqlite`)
+    runtimeDb = createRuntimeDatabase({
+      dbPath,
+      llmClient: createTestLlmClient(),
+      seedData: {
+        memories: [
+          { id: 1, text: 'Comparar cenarios', feedback_score: 0, usage_count: 0, created_at: '2026-07-01', updated_at: '2026-07-01' },
+        ],
+        chats: [
+          {
+            id: 1,
+            title: 'Chat 1',
+            created_at: '2026-07-01',
+            updated_at: '2026-07-01',
+            pinned: 0,
+            messages: [
+              { id: 'message-1', author: 'assistant', text: 'Resposta com memoria', memoryIds: [1], rating: 0 },
+            ],
+          },
+          {
+            id: 2,
+            title: 'Chat 2',
+            created_at: '2026-07-01',
+            updated_at: '2026-07-01',
+            pinned: 0,
+            messages: [
+              { id: 'message-2', author: 'assistant', text: 'Outra resposta com memoria', memoryIds: [1], rating: 0 },
+            ],
+          },
+        ],
+      },
+    })
+
+    await runtimeDb.initialize()
+    runtimeDb.deleteMemory(1)
+
+    const firstChat = runtimeDb.chats().find((chat) => chat.id === 1)
+    const secondChat = runtimeDb.chats().find((chat) => chat.id === 2)
+
+    expect(firstChat?.messages[0]?.memoryIds).toEqual([])
+    expect(secondChat?.messages[0]?.memoryIds).toEqual([])
   })
 })
