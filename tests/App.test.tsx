@@ -322,13 +322,34 @@ describe('App', () => {
   })
 
   it('supports editing and deleting memories from the cluster cards', async () => {
+    await harness?.cleanup()
+    harness = await createSqliteAppHarness({
+      chats: [
+        {
+          id: 1,
+          title: 'Clusters fortes',
+          created_at: '2026-07-20',
+          updated_at: '2026-07-20',
+          pinned: 0,
+          messages: [
+            { id: 'message-1', author: 'assistant', text: 'Como posso ajudar voce hoje?' },
+          ],
+        },
+      ],
+      memories: [
+        { id: 1, text: 'Prefere listas curtas', feedback_score: 4, usage_count: 18, created_at: '2026-07-20', updated_at: '2026-07-20' },
+        { id: 2, text: 'Prefere listas objetivas', feedback_score: 3, usage_count: 11, created_at: '2026-07-20', updated_at: '2026-07-20' },
+        { id: 3, text: 'Tom direto', feedback_score: 5, usage_count: 24, created_at: '2026-07-20', updated_at: '2026-07-20' },
+      ],
+    })
+
     const user = userEvent.setup()
 
     await renderApp()
     await openMemoriesView(user)
 
     const clusterSection = screen.getByRole('region', { name: 'Agrupamentos de memorias' })
-    const clusterItem = within(clusterSection).getByText('Prefere listas').closest('li')
+    const clusterItem = within(clusterSection).getByText('Prefere listas curtas').closest('li')
     expect(clusterItem).not.toBeNull()
 
     await user.click(within(clusterItem!).getByRole('button', { name: 'Editar memoria' }))
@@ -347,5 +368,40 @@ describe('App', () => {
     await user.click(within(updatedClusterItem!).getByRole('button', { name: 'Apagar memoria' }))
 
     expect(within(clusterSection).queryByText('Listas objetivas')).not.toBeInTheDocument()
+  })
+
+  it('groups only the genuinely close memories when text overlap is strong enough', async () => {
+    await harness?.cleanup()
+    harness = await createSqliteAppHarness({
+      chats: [
+        {
+          id: 1,
+          title: 'Memorias soltas',
+          created_at: '2026-07-20',
+          updated_at: '2026-07-20',
+          pinned: 0,
+          messages: [
+            { id: 'message-1', author: 'assistant', text: 'Como posso ajudar voce hoje?' },
+          ],
+        },
+      ],
+      memories: [
+        { id: 1, text: "User's preferred language: Portuguese", feedback_score: 0, usage_count: 0, created_at: '2026-07-20', updated_at: '2026-07-20' },
+        { id: 2, text: "User's dog age: 2 years", feedback_score: 0, usage_count: 0, created_at: '2026-07-20', updated_at: '2026-07-20' },
+        { id: 3, text: 'User prefers concise answers', feedback_score: 0, usage_count: 0, created_at: '2026-07-20', updated_at: '2026-07-20' },
+        { id: 4, text: "User's favorite language: Portuguese", feedback_score: 0, usage_count: 0, created_at: '2026-07-20', updated_at: '2026-07-20' },
+      ],
+    })
+
+    const user = userEvent.setup()
+    await renderApp()
+    await openMemoriesView(user)
+
+    const clusterSection = screen.getByRole('region', { name: 'Agrupamentos de memorias' })
+    expect(within(clusterSection).getByText('2 memorias')).toBeInTheDocument()
+    expect(within(clusterSection).getByText("User's preferred language: Portuguese")).toBeInTheDocument()
+    expect(within(clusterSection).getByText("User's favorite language: Portuguese")).toBeInTheDocument()
+    expect(within(clusterSection).queryByText("User's dog age: 2 years")).not.toBeInTheDocument()
+    expect(within(clusterSection).queryByText('User prefers concise answers')).not.toBeInTheDocument()
   })
 })

@@ -69,6 +69,22 @@ function createOwnershipAwareLlmClient(): TestLlmClient {
   }
 }
 
+function createAntiInferenceLlmClient(): TestLlmClient {
+  return {
+    async embed(text: string) {
+      return buildEmbedding(text)
+    },
+    async generateText(messages: Array<{ content: string }>) {
+      const prompt = messages.map((message) => message.content).join('\n')
+      if (!prompt.includes('Retorne apenas um array JSON de strings')) return 'Resposta generica.'
+
+      return prompt.includes('Nao infira metas permanentes, preferencias duradouras ou prioridades a partir de uma pergunta isolada, exercicio, teste, curiosidade ou pedido pontual.')
+        ? '[]'
+        : '["primary goal: Learn math"]'
+    },
+  }
+}
+
 afterEach(() => {
   runtimeDb?.close()
   runtimeDb = null
@@ -129,6 +145,36 @@ describe('runtimeDatabase', () => {
     expect(turn.assistantMessage?.text).toBe('Nao sei o nome do cachorro da sua namorada. Sei que o seu cachorro se chama Billy.')
   })
 
+  it('cria memoria para uma instrucao recorrente sobre sentimentos', async () => {
+    runtimeDb = createEmptyRuntimeDatabase()
+
+    await runtimeDb.initialize()
+    const { chat } = await runtimeDb.createChat('Teste de instrucao recorrente')
+
+    expect(chat).not.toBeNull()
+
+    await runtimeDb.sendUserMessage(chat!.id, 'Geralmente quando eu falar de sentimentos e voce nao souber opinar, me faca uma pergunta no final da sua mensagem')
+
+    const createdMemory = runtimeDb.memories().find(
+      (memory) => memory.text === 'user preference for emotional topics: ask a question at end if unsure',
+    )
+
+    expect(createdMemory).toBeDefined()
+  })
+
+  it('nao cria memoria especulativa a partir de uma pergunta isolada', async () => {
+    runtimeDb = createEmptyRuntimeDatabase({ llmClient: createAntiInferenceLlmClient() })
+
+    await runtimeDb.initialize()
+    const { chat } = await runtimeDb.createChat('Teste de inferencia indevida')
+
+    expect(chat).not.toBeNull()
+
+    await runtimeDb.sendUserMessage(chat!.id, 'Quanto e 2+2?')
+
+    expect(runtimeDb.memories()).toEqual([])
+  })
+
   it('falha quando a llm devolve uma memoria acima do limite configurado', async () => {
     runtimeDb = createEmptyRuntimeDatabase({ llmClient: createMemoryCandidateLlmClient('x'.repeat(81)) })
 
@@ -139,7 +185,7 @@ describe('runtimeDatabase', () => {
 
     await expect(runtimeDb.sendUserMessage(chat!.id, 'O nome do meu cachorro e Billy'))
       .rejects
-      .toThrow(/Memoria gerada pela LLM acima do limite/i)
+      .toThrow(/LLM retornou uma memoria acima do limite/i)
 
     expect(runtimeDb.memories()).toEqual([])
   })
@@ -154,7 +200,7 @@ describe('runtimeDatabase', () => {
 
     await expect(runtimeDb.sendUserMessage(chat!.id, 'O nome do meu cachorro e Billy'))
       .rejects
-      .toThrow(/Memoria gerada pela LLM sem valor util/i)
+      .toThrow(/LLM retornou um rotulo sem valor util/i)
 
     expect(runtimeDb.memories()).toEqual([])
   })

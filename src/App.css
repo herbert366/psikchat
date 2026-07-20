@@ -683,11 +683,12 @@ input:focus {
 
 .cluster-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 14px;
 }
 
 .cluster-card {
+  width: 100%;
   padding: 16px;
   border-radius: 12px;
   background: #292929;
@@ -709,6 +710,27 @@ input:focus {
   font-size: 12px;
 }
 
+.cluster-table {
+  display: grid;
+  gap: 6px;
+}
+
+.cluster-table-head,
+.cluster-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 54px 72px auto;
+  align-items: center;
+  gap: 10px;
+}
+
+.cluster-table-head {
+  padding: 0 4px 2px;
+  color: #9f9f9f;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+}
+
 .cluster-card ul {
   margin: 0;
   padding: 0;
@@ -716,28 +738,35 @@ input:focus {
 }
 
 .cluster-card li {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 4px 0;
+  padding: 8px 4px;
   font-size: 13px;
   color: #d4d4d4;
 }
 
-.cluster-card li::before {
-  content: '•';
-  flex: 0 0 auto;
-  color: #e87958;
+.cluster-item-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.cluster-item-text {
-  flex: 1;
-  min-width: 0;
+.cluster-item-usage {
+  justify-self: center;
+  color: #f3a68d;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.cluster-item-feedback {
+  justify-self: center;
+  color: #c8c8c8;
+  font-size: 12px;
+  white-space: nowrap;
 }
 
 .cluster-item-actions {
-  flex: 0 0 auto;
   display: flex;
+  justify-self: end;
   gap: 4px;
 }
 
@@ -857,5 +886,9 @@ input:focus {
   .create-memory {
     width: 100%;
     min-height: 44px;
+  }
+
+  .cluster-grid {
+    grid-template-columns: 1fr;
   }
 }

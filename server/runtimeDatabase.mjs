@@ -8,6 +8,7 @@ const DEFAULT_APP_CONFIG = {
   maxCaracteresMemoryContext: 500,
   maxMemoriesPerReply: 20,
   embeddingSimilarityThreshold: 0.18,
+  similarityThresholdToCreate: 0.86,
 }
 
 const DEFAULT_SEED_DATA = { chats: [], memories: [] }
@@ -170,13 +171,13 @@ function validateLlmMemoryCandidate(candidate, maxCharacters) {
   const separatorIndex = normalizedCandidate.indexOf(':')
   if (separatorIndex >= 0 && !normalizedCandidate.slice(separatorIndex + 1).trim()) {
     throw new Error(
-      `Memoria gerada pela LLM sem valor util: "${candidate}". Ajuste o prompt ou maxCaracteresMemory.`,
+      `Erro ao gerar memoria: a LLM retornou um rotulo sem valor util. Texto bruto: "${candidate}" | texto normalizado: "${normalizedCandidate}" | tamanho bruto: ${candidate.length} | tamanho normalizado: ${normalizedCandidate.length}. Ajuste o prompt ou maxCaracteresMemory.`,
     )
   }
 
   if (normalizedCandidate.length > maxCharacters) {
     throw new Error(
-      `Memoria gerada pela LLM acima do limite de ${maxCharacters} caracteres: "${candidate}". Ajuste o prompt ou maxCaracteresMemory.`,
+      `Erro ao gerar memoria: a LLM retornou uma memoria acima do limite. Limite: ${maxCharacters} | tamanho bruto: ${candidate.length} | tamanho normalizado: ${normalizedCandidate.length} | excesso: ${normalizedCandidate.length - maxCharacters} | texto bruto: "${candidate}" | texto normalizado: "${normalizedCandidate}". Ajuste o prompt ou maxCaracteresMemory.`,
     )
   }
 }
@@ -426,10 +427,15 @@ export function createRuntimeDatabase(options = {}) {
           '',
           'Crie apenas memorias novas e realmente reutilizaveis. O chat pode estar em qualquer idioma.',
           'Priorize fatos do usuario, preferencias, nomes, metas, projetos e restricoes.',
+          'Tambem salve instrucoes explicitas do usuario sobre como voce deve responder em situacoes recorrentes.',
+          'Nao infira metas permanentes, preferencias duradouras ou prioridades a partir de uma pergunta isolada, exercicio, teste, curiosidade ou pedido pontual.',
+          'Nao extrapole, nao resuma demais e nao transforme um exemplo casual em perfil do usuario.',
+          'Se o usuario descreveu uma regra condicional reutilizavel, preserve essa regra na memoria em vez de inventar uma abstracao mais ampla.',
           `Cada memoria deve ter no maximo ${config.maxCaracteresMemory} caracteres.`,
           'Formato obrigatorio: escreva cada memoria em ingles como "titulo semantico: valor concreto".',
           'Cada memoria deve preservar o valor concreto do fato. Um titulo, rotulo ou categoria sem valor e invalido.',
           'Exemplo: para "O nome do meu cachorro e Billy", retorne "user dog\'s name: Billy".',
+          'Exemplo: para "Quando eu falar de sentimentos e voce nao souber opinar, me faca uma pergunta no final", retorne uma memoria equivalente que preserve essa instrucao condicional.',
           'Se precisar, use um texto um pouco maior para preservar o fato completo e util.',
           'Ignore informacoes genericas, redundantes ou que so repetem a pergunta.',
           'Retorne apenas um array JSON de strings. Exemplo: ["Nome: Ana", "Nome do cachorro: Billy", "Prefere exemplos curtos"]',
@@ -447,6 +453,10 @@ export function createRuntimeDatabase(options = {}) {
 
   function memoryAlreadyExists(existingTexts, candidate) {
     return existingTexts.some((text) => lexicalSimilarity(text, candidate) > 0.74)
+  }
+
+  function memoryIsTooSimilar(existingMemories, candidate, candidateEmbedding) {
+    return existingMemories.some((memory) => buildMemoryScore(memory, candidate, candidateEmbedding).similarity >= config.similarityThresholdToCreate)
   }
 
   function dedupeCandidates(candidates) {
@@ -537,6 +547,14 @@ export function createRuntimeDatabase(options = {}) {
         normalizedCandidate,
       )
       if (alreadyExists) continue
+
+      const candidateEmbedding = await llmClient.embed(normalizedCandidate)
+      const similarMemoryExists = memoryIsTooSimilar(
+        [...listMemories(), ...created],
+        normalizedCandidate,
+        candidateEmbedding,
+      )
+      if (similarMemoryExists) continue
 
       const memory = await createMemory(normalizedCandidate)
       if (memory) created.push(memory)

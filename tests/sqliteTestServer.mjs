@@ -54,6 +54,13 @@ function buildMemoryCandidates(prompt) {
     candidates.push('Prefere listas')
   }
 
+  if (
+    normalizedPrompt.includes('quando eu falar de sentimentos')
+    && normalizedPrompt.includes('me faca uma pergunta no final')
+  ) {
+    candidates.push('user preference for emotional topics: ask a question at end if unsure')
+  }
+
   return JSON.stringify(candidates)
 }
 

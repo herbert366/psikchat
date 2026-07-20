@@ -8,7 +8,7 @@ import type { Chat, Memory } from './appTypes'
 
 type View = 'chat' | 'memories'
 type MemorySort = 'updated-desc' | 'updated-asc' | 'created-desc' | 'created-asc' | 'usage-desc' | 'usage-asc' | 'feedback-desc' | 'feedback-asc'
-type MemoryCluster = { id: number; items: Memory[] }
+type MemoryCluster = { id: number; items: Memory[]; similarityPercent: number }
 type QueuedMessage = { id: string; chatId: number; text: string }
 type OptimisticUserMessage = { id: string; chatId: number; text: string }
 
@@ -58,6 +58,40 @@ function cosineSimilarity(first: number[], second: number[]) {
   return dot / (Math.sqrt(firstMagnitude) * Math.sqrt(secondMagnitude))
 }
 
+function memoryClusterSimilarityScore(first: Memory, second: Memory) {
+  const lexicalScore = lexicalSimilarity(first.text, second.text)
+  const embeddingScore = Math.max(0, cosineSimilarity(first.embedding, second.embedding))
+  const weightedScore = (lexicalScore * APP_CONFIG.memoryClusterSimilarityWeights.lexical)
+    + (embeddingScore * APP_CONFIG.memoryClusterSimilarityWeights.embedding)
+
+  return Math.max(lexicalScore, weightedScore)
+}
+
+function clusterSimilarityPercent(items: Memory[]) {
+  if (items.length < 2) return 0
+
+  let totalScore = 0
+  let pairCount = 0
+
+  for (let firstIndex = 0; firstIndex < items.length - 1; firstIndex += 1) {
+    for (let secondIndex = firstIndex + 1; secondIndex < items.length; secondIndex += 1) {
+      totalScore += memoryClusterSimilarityScore(items[firstIndex]!, items[secondIndex]!)
+      pairCount += 1
+    }
+  }
+
+  return pairCount === 0 ? 0 : Math.round((totalScore / pairCount) * 100)
+}
+
+function memoriesAreRelated(first: Memory, second: Memory) {
+  const lexicalScore = lexicalSimilarity(first.text, second.text)
+  if (lexicalScore >= APP_CONFIG.memoryClusterSimilarityThreshold) return true
+
+  const embeddingScore = cosineSimilarity(first.embedding, second.embedding)
+  return lexicalScore >= APP_CONFIG.memoryClusterLexicalFloor
+    && embeddingScore >= APP_CONFIG.memoryClusterEmbeddingThreshold
+}
+
 function buildMemoryClusters(memories: Memory[]): MemoryCluster[] {
   const remaining = [...memories]
   const clusters: MemoryCluster[] = []
@@ -66,15 +100,13 @@ function buildMemoryClusters(memories: Memory[]): MemoryCluster[] {
     const current = remaining.shift()
     if (!current) break
 
-    const similarItems = remaining.filter((candidate) => Math.max(
-      lexicalSimilarity(current.text, candidate.text),
-      cosineSimilarity(current.embedding, candidate.embedding),
-    ) >= APP_CONFIG.memoryClusterSimilarityThreshold)
+    const similarItems = remaining.filter((candidate) => memoriesAreRelated(current, candidate))
 
     if (similarItems.length === 0) continue
 
     const clusterItemIds = new Set([current.id, ...similarItems.map((item) => item.id)])
-    clusters.push({ id: current.id, items: [current, ...similarItems] })
+    const items = [current, ...similarItems]
+    clusters.push({ id: current.id, items, similarityPercent: clusterSimilarityPercent(items) })
 
     for (let index = remaining.length - 1; index >= 0; index -= 1) {
       if (clusterItemIds.has(remaining[index]!.id)) {
@@ -132,7 +164,10 @@ function App({ dataSource = appDataSource }: AppProps) {
   const currentMemoryIds = new Set(memories.map((memoryItem) => memoryItem.id))
   const memoriesById = new Map(memories.map((memoryItem) => [memoryItem.id, memoryItem]))
   const visibleClusters = buildMemoryClusters(memories)
-    .map((cluster) => ({ ...cluster, items: cluster.items.filter((item) => currentMemoryIds.has(item.id)) }))
+    .map((cluster) => {
+      const items = cluster.items.filter((item) => currentMemoryIds.has(item.id))
+      return { ...cluster, items, similarityPercent: clusterSimilarityPercent(items) }
+    })
     .filter((cluster) => cluster.items.length > 1)
   const totalClusterPages = Math.max(1, Math.ceil(visibleClusters.length / APP_CONFIG.clusterPageSize))
 
@@ -733,27 +768,37 @@ function App({ dataSource = appDataSource }: AppProps) {
               <div className="cluster-grid">
                 {paginatedClusters.length > 0 ? paginatedClusters.map((cluster) => (
                   <article className="cluster-card" key={cluster.id}>
-                    <span className="cluster-count">{cluster.items.length} memorias</span>
-                    <ul>
-                       {cluster.items.map((item) => (
-                         <li key={item.id} className="cluster-item">
-                            <span className="cluster-item-text">{item.text}</span>
-                            <span className="cluster-item-actions">
+                    <span className="cluster-count">{cluster.items.length} memorias · {cluster.similarityPercent}% de similaridade</span>
+                    <div className="cluster-table" role="table" aria-label={`Memorias do agrupamento ${cluster.id}`}>
+                      <div className="cluster-table-head" role="row">
+                        <span role="columnheader">Memoria</span>
+                        <span role="columnheader">Uso</span>
+                        <span role="columnheader">Feedback</span>
+                        <span role="columnheader" className="cluster-table-actions-label">Acoes</span>
+                      </div>
+                      <ul>
+                        {cluster.items.map((item) => (
+                          <li key={item.id} className="cluster-item" role="row">
+                            <span className="cluster-item-text" role="cell" title={item.text}>{item.text}</span>
+                            <span className="cluster-item-usage" role="cell">{item.usage_count}</span>
+                            <span className="cluster-item-feedback" role="cell">{item.feedback_score}</span>
+                            <span className="cluster-item-actions" role="cell">
                               <button type="button" aria-label="Editar memoria" onClick={() => openMemoryEditor(item)}>
                                 <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
                                   <path d="M15.4998 5.50067L18.3282 8.3291M13 21H21M3 21.0004L3.04745 20.6683C3.21536 19.4929 3.29932 18.9052 3.49029 18.3565C3.65975 17.8697 3.89124 17.4067 4.17906 16.979C4.50341 16.497 4.92319 16.0772 5.76274 15.2377L17.4107 3.58969C18.1918 2.80865 19.4581 2.80864 20.2392 3.58969C21.0202 4.37074 21.0202 5.63707 20.2392 6.41812L8.37744 18.2798C7.61579 19.0415 7.23497 19.4223 6.8012 19.7252C6.41618 19.994 6.00093 20.2167 5.56398 20.3887C5.07171 20.5824 4.54375 20.6889 3.48793 20.902L3 21.0004Z" stroke="#ffffff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
                                 </svg>
                               </button>
-                             <button type="button" aria-label="Apagar memoria" onClick={() => deleteMemory(item.id)}>✕</button>
-                           </span>
-                         </li>
-                       ))}
-                     </ul>
-                   </article>
+                              <button type="button" aria-label="Apagar memoria" onClick={() => deleteMemory(item.id)}>✕</button>
+                            </span>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  </article>
                 )) : (
                   <p className="chat-status">Nenhum agrupamento sugerido.</p>
                 )}
-              </div>
+               </div>
               <div className="pagination" role="group" aria-label="Paginacao dos agrupamentos">
                 <button type="button" disabled={currentClusterPage === 0} onClick={() => setClusterPage((p) => p - 1)}>Anterior</button>
                 <span className="page-info">{currentClusterPage + 1} de {totalClusterPages}</span>
