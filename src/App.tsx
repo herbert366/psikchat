@@ -115,6 +115,7 @@ function App({ dataSource = appDataSource }: AppProps) {
   const [optimisticUserMessage, setOptimisticUserMessage] = useState<OptimisticUserMessage | null>(null)
   const [queuedMessages, setQueuedMessages] = useState<QueuedMessage[]>([])
   const chatTitleInputRef = useRef<HTMLInputElement>(null)
+  const messageInputRef = useRef<HTMLInputElement>(null)
   const activeChatRef = useRef<number | null>(null)
   const queuedMessagesRef = useRef<QueuedMessage[]>([])
 
@@ -153,6 +154,12 @@ function App({ dataSource = appDataSource }: AppProps) {
   useEffect(() => {
     activeChatRef.current = currentActiveChatId
   }, [currentActiveChatId])
+
+  useEffect(() => {
+    if (view === 'chat' && currentActiveChatId && !isMemoryOpen) {
+      messageInputRef.current?.focus()
+    }
+  }, [view, currentActiveChatId, isMemoryOpen])
 
   useEffect(() => {
     if (editingChatId) {
@@ -617,6 +624,7 @@ function App({ dataSource = appDataSource }: AppProps) {
                 Criar memoria
               </button>
               <input
+                ref={messageInputRef}
                 value={message}
                 onChange={(event) => setMessage(event.target.value)}
                 placeholder="Escreva sua mensagem..."

@@ -3,7 +3,7 @@ import path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 
 const DEFAULT_APP_CONFIG = {
-  maxCaracteresMemory: 20,
+  maxCaracteresMemory: 80,
   maxCaracteresMemoryToCreateMemory: 500,
   maxCaracteresMemoryContext: 500,
   maxMemoriesPerReply: 20,
@@ -21,6 +21,10 @@ function normalizeText(value) {
 
 function compactWhitespace(value) {
   return value.replace(/\s+/g, ' ').trim()
+}
+
+function normalizeMemoryText(value) {
+  return compactWhitespace(value).replace(/[.!?]+$/g, '')
 }
 
 function tokenize(value) {
@@ -125,8 +129,8 @@ function buildHistoryChat(messages) {
 }
 
 function toShortMemory(text, maxCharacters) {
-  const words = compactWhitespace(text)
-    .replace(/[.!?]+$/g, '')
+  const normalized = normalizeMemoryText(text)
+  const words = normalized
     .split(' ')
     .filter(Boolean)
 
@@ -137,7 +141,7 @@ function toShortMemory(text, maxCharacters) {
     current = next
   }
 
-  return current || compactWhitespace(text).slice(0, maxCharacters).trim()
+  return current || normalized.slice(0, maxCharacters).trim()
 }
 
 function extractJsonArray(text) {
@@ -158,6 +162,22 @@ function tryParseJsonArray(text) {
   }
   catch {
     return null
+  }
+}
+
+function validateLlmMemoryCandidate(candidate, maxCharacters) {
+  const normalizedCandidate = normalizeMemoryText(candidate)
+  const separatorIndex = normalizedCandidate.indexOf(':')
+  if (separatorIndex >= 0 && !normalizedCandidate.slice(separatorIndex + 1).trim()) {
+    throw new Error(
+      `Memoria gerada pela LLM sem valor util: "${candidate}". Ajuste o prompt ou maxCaracteresMemory.`,
+    )
+  }
+
+  if (normalizedCandidate.length > maxCharacters) {
+    throw new Error(
+      `Memoria gerada pela LLM acima do limite de ${maxCharacters} caracteres: "${candidate}". Ajuste o prompt ou maxCaracteresMemory.`,
+    )
   }
 }
 
@@ -388,32 +408,6 @@ export function createRuntimeDatabase(options = {}) {
     }
   }
 
-  function createHeuristicMemories(message) {
-    const compact = compactWhitespace(message)
-    if (!compact) return []
-
-    const rules = [
-      { pattern: /prefiro\s+(.+)/i, prefix: 'Prefere ' },
-      { pattern: /gosto\s+de\s+(.+)/i, prefix: 'Gosta de ' },
-      { pattern: /quero\s+(.+)/i, prefix: 'Quer ' },
-      { pattern: /preciso\s+de\s+(.+)/i, prefix: 'Precisa de ' },
-      { pattern: /meu\s+nome\s+e\s+(.+?)(?:\s+e\s+eu\b|\s+e\s+me\b|[.,!?\n]|$)/i, prefix: 'Nome: ' },
-      { pattern: /me\s+chama\s+(.+?)(?:\s+e\s+eu\b|\s+e\s+me\b|[.,!?\n]|$)/i, prefix: 'Nome: ' },
-      { pattern: /trabalho\s+com\s+(.+)/i, prefix: 'Trabalha com ' },
-      { pattern: /meu\s+cachorro\s+(?:se\s+chama|chama)\s+(.+?)(?:\s+e\s+eu\b|\s+e\s+me\b|[.,!?\n]|$)/i, prefix: 'Cachorro: ' },
-      { pattern: /meu\s+gato\s+(?:se\s+chama|chama)\s+(.+?)(?:\s+e\s+eu\b|\s+e\s+me\b|[.,!?\n]|$)/i, prefix: 'Gato: ' },
-    ]
-
-    const matches = []
-    for (const rule of rules) {
-      const match = compact.match(rule.pattern)
-      if (!match?.[1]) continue
-      matches.push(toShortMemory(rule.prefix + match[1], config.maxCaracteresMemory))
-    }
-
-    return matches
-  }
-
   async function generateLlmMemoryCandidates(historyChat, existingMemories) {
     const recentChat = historyChat.chat_text.slice(-config.maxCaracteresMemoryToCreateMemory)
     const response = await llmClient.generateText([
@@ -430,16 +424,25 @@ export function createRuntimeDatabase(options = {}) {
           'Memorias ja existentes:',
           existingMemories.join('\n') || '(nenhuma)',
           '',
-          'Crie apenas memorias novas e realmente reutilizaveis.',
+          'Crie apenas memorias novas e realmente reutilizaveis. O chat pode estar em qualquer idioma.',
           'Priorize fatos do usuario, preferencias, nomes, metas, projetos e restricoes.',
           `Cada memoria deve ter no maximo ${config.maxCaracteresMemory} caracteres.`,
+          'Formato obrigatorio: escreva cada memoria em ingles como "titulo semantico: valor concreto".',
+          'Cada memoria deve preservar o valor concreto do fato. Um titulo, rotulo ou categoria sem valor e invalido.',
+          'Exemplo: para "O nome do meu cachorro e Billy", retorne "user dog\'s name: Billy".',
+          'Se precisar, use um texto um pouco maior para preservar o fato completo e util.',
           'Ignore informacoes genericas, redundantes ou que so repetem a pergunta.',
-          'Retorne apenas um array JSON de strings. Exemplo: ["Nome: Ana", "Prefere exemplos"]',
+          'Retorne apenas um array JSON de strings. Exemplo: ["Nome: Ana", "Nome do cachorro: Billy", "Prefere exemplos curtos"]',
         ].join('\n'),
       },
     ], { temperature: 0 })
 
-    return extractJsonArray(response)
+    const candidates = extractJsonArray(response)
+    for (const candidate of candidates) {
+      validateLlmMemoryCandidate(candidate, config.maxCaracteresMemory)
+    }
+
+    return candidates
   }
 
   function memoryAlreadyExists(existingTexts, candidate) {
@@ -520,10 +523,9 @@ export function createRuntimeDatabase(options = {}) {
     })
 
     const existingTexts = listMemories().map((memory) => memory.text)
-    const candidates = dedupeCandidates([
-      ...createHeuristicMemories(historyChat.lastUserMessage),
-      ...await generateLlmMemoryCandidates(historyChat, relatedMemories.map((memory) => memory.text)),
-    ])
+    const candidates = dedupeCandidates(
+      await generateLlmMemoryCandidates(historyChat, relatedMemories.map((memory) => memory.text)),
+    )
 
     const created = []
     for (const candidate of candidates) {
@@ -548,11 +550,16 @@ export function createRuntimeDatabase(options = {}) {
       {
         role: 'system',
         content: [
-          'Voce responde em portugues do Brasil.',
-          'Use as memorias como fonte de verdade para fatos pessoais, preferencias e contexto recorrente.',
-          'Se a resposta estiver nas memorias, responda diretamente usando essa informacao.',
-          'Nao invente fatos ausentes nas memorias ou no chat.',
-          'Seja objetivo, util e natural.',
+           'Voce responde em portugues do Brasil.',
+           'Use as memorias como fonte de verdade para fatos pessoais, preferencias e contexto recorrente.',
+           'Se a resposta estiver nas memorias, responda diretamente usando essa informacao.',
+           'REGRA CRITICA: inclua todos os fatos recuperados que forem relevantes para a categoria da pergunta, mesmo que tenham sujeitos diferentes do sujeito perguntado.',
+           'Interprete cada memoria como um fato limitado pelo seu sujeito, relacao e valor; preserve esses tres elementos.',
+           'Nao atribua um fato de uma pessoa a outra nem infira que uma memoria sobre o usuario vale para familiares, parceiros ou outras pessoas.',
+           'Antes de responder, compare o sujeito e a categoria do fato pedido com cada fato recuperado. Se houver um fato da mesma categoria para outro sujeito, responda naturalmente com duas afirmacoes: uma informa que o fato pedido para esse sujeito e desconhecido; a outra cita o fato relacionado conhecido, identificando seu sujeito. A resposta e invalida se faltar uma dessas afirmacoes.',
+           'Nao ofereca ajuda adicional, nao faca perguntas de acompanhamento e nao mencione memorias.',
+           'Nao invente fatos ausentes nas memorias ou no chat.',
+           'Seja objetivo, util e natural.',
         ].join(' '),
       },
       {
@@ -567,7 +574,7 @@ export function createRuntimeDatabase(options = {}) {
           `Mensagem final do usuario: ${lastUserMessage || '(vazia)'}`,
         ].join('\n'),
       },
-    ], { temperature: 0.3 })
+    ], { temperature: 0.55 })
   }
 
   function incrementMemoryUsage(memoryIds) {

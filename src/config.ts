@@ -1,7 +1,7 @@
 export const APP_CONFIG = {
   tablePageSize: 4,
   clusterPageSize: 2,
-  maxCaracteresMemory: 20,
+  maxCaracteresMemory: 80,
   maxCaracteresMemoryToCreateMemory: 500,
   maxCaracteresMemoryContext: 500,
   maxMemoriesPerReply: 20,

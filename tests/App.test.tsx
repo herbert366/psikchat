@@ -49,6 +49,24 @@ describe('App', () => {
     await waitFor(() => expect(positiveButtons.at(-1)).toHaveAttribute('aria-pressed', 'true'))
   })
 
+  it('persists and links the complete memory extracted from a natural user message', async () => {
+    const user = userEvent.setup()
+
+    await renderApp()
+
+    await user.type(screen.getByRole('textbox', { name: 'Mensagem' }), 'O nome do meu cachorro é Billy')
+    await user.click(screen.getByRole('button', { name: 'Enviar' }))
+
+    expect(await screen.findByText('Vou guardar que o nome do seu cachorro e Billy.')).toBeInTheDocument()
+
+    const memoryButtons = screen.getAllByRole('button', { name: 'Mostrar memorias usadas' })
+    await user.click(memoryButtons.at(-1)!)
+
+    const memoryPanel = screen.getByLabelText('Memorias usadas nesta resposta')
+    expect(within(memoryPanel).getByText("user dog's name: Billy")).toBeInTheDocument()
+    expect(within(memoryPanel).queryByText("user dog's name:")).not.toBeInTheDocument()
+  })
+
   it('ignores blank messages and supports negative feedback on assistant replies', async () => {
     const user = userEvent.setup()
 
