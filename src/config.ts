@@ -1,10 +1,17 @@
 export const APP_CONFIG = {
   tablePageSize: 4,
   clusterPageSize: 2,
+  maxCaracteresMemory: 20,
+  maxCaracteresMemoryToCreateMemory: 500,
+  maxCaracteresMemoryContext: 500,
+  maxMemoriesPerReply: 20,
+  embeddingSimilarityThreshold: 0.18,
   seedChats: [
     {
-      id: 'chat-1',
+      id: 1,
       title: 'Reescrever Prompt UI Memórias',
+      created_at: '2026-06-01',
+      updated_at: '2026-07-12',
       messages: [
         { id: 'message-1', author: 'assistant' as const, text: 'Como posso ajudar voce hoje?' },
         { id: 'message-2', author: 'user' as const, text: 'Quero organizar minhas metas da semana.' },
@@ -12,16 +19,20 @@ export const APP_CONFIG = {
       ],
     },
     {
-      id: 'chat-2',
+      id: 2,
       title: 'Bilhão e Valuation',
+      created_at: '2026-06-07',
+      updated_at: '2026-07-10',
       messages: [
         { id: 'message-4', author: 'user' as const, text: 'Como penso sobre valuation de uma empresa?' },
         { id: 'message-5', author: 'assistant' as const, text: 'Comece separando crescimento, margem, risco e o fluxo de caixa que o negocio pode gerar.' },
       ],
     },
     {
-      id: 'chat-3',
+      id: 3,
       title: 'Neymar e o Ranking de Gols',
+      created_at: '2026-06-12',
+      updated_at: '2026-07-16',
       messages: [
         { id: 'message-6', author: 'user' as const, text: 'Quero comparar os numeros de gols por temporada.' },
         { id: 'message-7', author: 'assistant' as const, text: 'Podemos montar a comparacao por clube, selecao e competicao para evitar conclusoes enviesadas.' },

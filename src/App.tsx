@@ -2,8 +2,9 @@ import { useEffect, useRef, useState } from 'react'
 import type { FormEvent, KeyboardEvent } from 'react'
 import './App.css'
 import { clusterGroups, APP_CONFIG } from './config'
-import { db } from './mockDatabase'
-import type { Memory } from './mockDatabase'
+import { appDataSource, isPromiseLike } from './dataSource'
+import type { AppSnapshot } from './dataSource'
+import type { Chat, Memory } from './mockDatabase'
 
 type View = 'chat' | 'memories'
 type MemorySort = 'updated-desc' | 'updated-asc' | 'created-desc' | 'created-asc' | 'usage-desc' | 'usage-asc' | 'feedback-desc' | 'feedback-asc'
@@ -12,14 +13,19 @@ function normalizeSearchText(value: string) {
   return value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLocaleLowerCase()
 }
 
+function resolveErrorMessage(error: unknown) {
+  return error instanceof Error ? error.message : 'Algo falhou ao sincronizar os dados.'
+}
+
 function App() {
+  const [initialSnapshot] = useState<AppSnapshot>(() => appDataSource.getInitialSnapshot())
   const [view, setView] = useState<View>('chat')
   const [isChatsOpen, setIsChatsOpen] = useState(true)
-  const [activeChat, setActiveChat] = useState<string | null>(APP_CONFIG.seedChats[0].id)
-  const [messages, setMessages] = useState(() => db.messages(APP_CONFIG.seedChats[0].id))
+  const [chats, setChats] = useState<Chat[]>(initialSnapshot.chats)
+  const [activeChat, setActiveChat] = useState<number | null>(initialSnapshot.chats[0]?.id ?? null)
   const [message, setMessage] = useState('')
   const [memory, setMemory] = useState('')
-  const [memories, setMemories] = useState<Memory[]>(() => db.memories())
+  const [memories, setMemories] = useState<Memory[]>(initialSnapshot.memories)
   const [isMemoryOpen, setIsMemoryOpen] = useState(false)
   const [editingMemoryId, setEditingMemoryId] = useState<number | null>(null)
   const [memoryMessageId, setMemoryMessageId] = useState<string | null>(null)
@@ -27,9 +33,12 @@ function App() {
   const [memorySearch, setMemorySearch] = useState('')
   const [memorySort, setMemorySort] = useState<MemorySort>('updated-desc')
   const [clusterPage, setClusterPage] = useState(0)
-  const [openChatMenuId, setOpenChatMenuId] = useState<string | null>(null)
-  const [editingChatId, setEditingChatId] = useState<string | null>(null)
+  const [openChatMenuId, setOpenChatMenuId] = useState<number | null>(null)
+  const [editingChatId, setEditingChatId] = useState<number | null>(null)
   const [chatTitle, setChatTitle] = useState('')
+  const [appError, setAppError] = useState<string | null>(null)
+  const [isBootstrapping, setIsBootstrapping] = useState(!appDataSource.supportsSyncSnapshot)
+  const [isSendingMessage, setIsSendingMessage] = useState(false)
   const chatTitleInputRef = useRef<HTMLInputElement>(null)
 
   const searchableText = normalizeSearchText(memorySearch.trim())
@@ -43,6 +52,7 @@ function App() {
   })
   const totalTablePages = Math.max(1, Math.ceil(sortedMemories.length / APP_CONFIG.tablePageSize))
   const currentMemoryIds = new Set(memories.map((memoryItem) => memoryItem.id))
+  const memoriesById = new Map(memories.map((memoryItem) => [memoryItem.id, memoryItem]))
   const visibleClusters = clusterGroups
     .map((cluster) => ({ ...cluster, items: cluster.items.filter((item) => currentMemoryIds.has(item.id)) }))
     .filter((cluster) => cluster.items.length > 0)
@@ -52,7 +62,12 @@ function App() {
   const paginatedMemories = sortedMemories.slice(currentTablePage * APP_CONFIG.tablePageSize, (currentTablePage + 1) * APP_CONFIG.tablePageSize)
   const currentClusterPage = Math.min(clusterPage, totalClusterPages - 1)
   const paginatedClusters = visibleClusters.slice(currentClusterPage * APP_CONFIG.clusterPageSize, (currentClusterPage + 1) * APP_CONFIG.clusterPageSize)
-  const chats = [...db.chats()].sort((first, second) => Number(second.pinned) - Number(first.pinned))
+  const orderedChats = [...chats].sort((first, second) => Number(second.pinned) - Number(first.pinned))
+  const currentActiveChatId = activeChat && chats.some((chat) => chat.id === activeChat)
+    ? activeChat
+    : orderedChats[0]?.id ?? null
+  const activeChatRecord = chats.find((chat) => chat.id === currentActiveChatId) ?? orderedChats[0] ?? null
+  const messages = activeChatRecord?.messages ?? []
 
   useEffect(() => {
     if (editingChatId) {
@@ -61,16 +76,76 @@ function App() {
     }
   }, [editingChatId])
 
+  useEffect(() => {
+    if (appDataSource.supportsSyncSnapshot) return
+
+    void (appDataSource.loadState() as Promise<AppSnapshot>)
+      .then((snapshot) => {
+        setChats(snapshot.chats)
+        setMemories(snapshot.memories)
+        setActiveChat((current) => current && snapshot.chats.some((chat) => chat.id === current)
+          ? current
+          : snapshot.chats[0]?.id ?? null)
+        setAppError(null)
+      })
+      .catch((error) => setAppError(resolveErrorMessage(error)))
+      .finally(() => setIsBootstrapping(false))
+  }, [])
+
+  function applySnapshot(snapshot: AppSnapshot, preferredChatId: number | null = currentActiveChatId) {
+    setChats(snapshot.chats)
+    setMemories(snapshot.memories)
+
+    if (preferredChatId && snapshot.chats.some((chat) => chat.id === preferredChatId)) {
+      setActiveChat(preferredChatId)
+      return
+    }
+
+    setActiveChat(snapshot.chats[0]?.id ?? null)
+  }
+
+  function syncStateOperation<T extends { state: AppSnapshot }>(
+    result: T | Promise<T>,
+    options: { preferredChatId?: number | null; clearError?: boolean; onSuccess?: (value: T) => void; trackSending?: boolean } = {},
+  ) {
+    const applyResult = (value: T) => {
+      if (options.clearError !== false) {
+        setAppError(null)
+      }
+      applySnapshot(value.state, options.preferredChatId)
+      options.onSuccess?.(value)
+    }
+
+    if (isPromiseLike(result)) {
+      if (options.trackSending) {
+        setIsSendingMessage(true)
+      }
+
+      void result
+        .then((value) => applyResult(value))
+        .catch((error) => setAppError(resolveErrorMessage(error)))
+        .finally(() => {
+          if (options.trackSending) {
+            setIsSendingMessage(false)
+          }
+        })
+      return
+    }
+
+    applyResult(result)
+  }
+
   function sendMessage(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     const text = message.trim()
     if (!text) return
 
-    if (!activeChat) return
-    const nextMessage = { id: `message-${Date.now()}`, author: 'user' as const, text }
-    db.addMessage(activeChat, nextMessage)
-    setMessages((current) => [...current, nextMessage])
-    setMessage('')
+    if (!currentActiveChatId) return
+    syncStateOperation(appDataSource.sendUserMessage(currentActiveChatId, text), {
+      preferredChatId: currentActiveChatId,
+      onSuccess: () => setMessage(''),
+      trackSending: true,
+    })
   }
 
   function createMemory(event: FormEvent<HTMLFormElement>) {
@@ -78,21 +153,25 @@ function App() {
     const text = memory.trim()
     if (!text) return
 
-    db.createMemory(text)
-    setMemories(db.memories())
-    setMemory('')
-    setIsMemoryOpen(false)
+    syncStateOperation(appDataSource.createMemory(text), {
+      onSuccess: () => {
+        setMemory('')
+        setIsMemoryOpen(false)
+      },
+    })
   }
 
   function editMemory(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     const text = memory.trim()
     if (!text || editingMemoryId === null) return
-    db.updateMemory(editingMemoryId, text)
-    setMemories(db.memories())
-    setMemory('')
-    setEditingMemoryId(null)
-    setIsMemoryOpen(false)
+    syncStateOperation(appDataSource.updateMemory(editingMemoryId, text), {
+      onSuccess: () => {
+        setMemory('')
+        setEditingMemoryId(null)
+        setIsMemoryOpen(false)
+      },
+    })
   }
 
   function openMemoryEditor(memoryItem: Memory) {
@@ -102,9 +181,13 @@ function App() {
   }
 
   function deleteMemory(id: number) {
-    db.deleteMemory(id)
-    setMemories(db.memories())
+    syncStateOperation(appDataSource.deleteMemory(id), { preferredChatId: currentActiveChatId })
     setClusterPage((page) => Math.min(page, Math.max(0, Math.ceil(visibleClusters.length / APP_CONFIG.clusterPageSize) - 1)))
+  }
+
+  function rateAssistantMessage(messageId: string, rating: -1 | 1) {
+    if (!currentActiveChatId) return
+    syncStateOperation(appDataSource.rateAssistantMessage(currentActiveChatId, messageId, rating), { preferredChatId: currentActiveChatId })
   }
 
   function navigate(target: View) {
@@ -112,16 +195,13 @@ function App() {
     setView(target)
   }
 
-  function selectChat(title: string) {
-    const chat = db.chats().find((item) => item.title === title)
-    if (!chat) return
-    setActiveChat(chat.id)
-    setMessages(db.messages(chat.id))
+  function selectChat(chatId: number) {
+    setActiveChat(chatId)
     navigate('chat')
   }
 
-  function openRenameChat(chatId: string) {
-    const chat = db.chats().find((item) => item.id === chatId)
+  function openRenameChat(chatId: number) {
+    const chat = chats.find((item) => item.id === chatId)
     if (!chat) return
     setEditingChatId(chatId)
     setChatTitle(chat.title)
@@ -131,9 +211,13 @@ function App() {
   function saveChatRename() {
     const title = chatTitle.trim()
     if (!title || !editingChatId) return
-    db.renameChat(editingChatId, title)
-    setEditingChatId(null)
-    setChatTitle('')
+    syncStateOperation(appDataSource.renameChat(editingChatId, title), {
+      preferredChatId: currentActiveChatId,
+      onSuccess: () => {
+        setEditingChatId(null)
+        setChatTitle('')
+      },
+    })
   }
 
   function handleChatRenameKeyDown(event: KeyboardEvent<HTMLInputElement>) {
@@ -148,28 +232,31 @@ function App() {
     }
   }
 
-  function toggleChatPinned(chatId: string) {
-    db.toggleChatPinned(chatId)
-    setOpenChatMenuId(null)
+  function toggleChatPinned(chatId: number) {
+    syncStateOperation(appDataSource.toggleChatPinned(chatId), {
+      preferredChatId: currentActiveChatId,
+      onSuccess: () => setOpenChatMenuId(null),
+    })
   }
 
-  function deleteChat(chatId: string) {
-    db.deleteChat(chatId)
-    if (activeChat === chatId) {
-      const nextChat = db.chats()[0]
-      setActiveChat(nextChat?.id ?? null)
-      setMessages(nextChat ? db.messages(nextChat.id) : [])
-    }
-    setOpenChatMenuId(null)
+  function deleteChat(chatId: number) {
+    syncStateOperation(appDataSource.deleteChat(chatId), {
+      preferredChatId: currentActiveChatId === chatId ? null : currentActiveChatId,
+      onSuccess: () => setOpenChatMenuId(null),
+    })
   }
 
   function startNewChat() {
-    const chat = db.createChat()
-    setMessages(chat.messages)
-    setMessage('')
-    setMemoryMessageId(null)
-    setActiveChat(chat.id)
-    navigate('chat')
+    syncStateOperation(appDataSource.createChat(), {
+      onSuccess: ({ chat }) => {
+        setMessage('')
+        setMemoryMessageId(null)
+        if (chat) {
+          setActiveChat(chat.id)
+        }
+        navigate('chat')
+      },
+    })
   }
 
   return (
@@ -194,11 +281,11 @@ function App() {
           </div>
           {isChatsOpen && (
             <div className="chat-list">
-                {chats.map((chat) => (
+                {orderedChats.map((chat) => (
                   <div
-                     className={`chat-list-item ${view === 'chat' && activeChat === chat.id ? 'active' : ''}`}
-                     key={chat.id}
-                  >
+                      className={`chat-list-item ${view === 'chat' && activeChat === chat.id ? 'active' : ''}`}
+                      key={chat.id}
+                   >
                    {editingChatId === chat.id ? (
                      <input
                        ref={chatTitleInputRef}
@@ -211,12 +298,12 @@ function App() {
                        onBlur={saveChatRename}
                        onClick={(event) => event.stopPropagation()}
                      />
-                   ) : (
-                     <>
-                       <button className="chat-title" type="button" onClick={() => selectChat(chat.title)}>
-                         {chat.pinned && <span className="chat-pin" aria-label="Chat fixado">&#128204;</span>}
-                         <span>{chat.title}</span>
-                       </button>
+                    ) : (
+                      <>
+                        <button className="chat-title" type="button" onClick={() => selectChat(chat.id)}>
+                          {chat.pinned && <span className="chat-pin" aria-label="Chat fixado">&#128204;</span>}
+                          <span>{chat.title}</span>
+                        </button>
                        <button
                          className="chat-menu-trigger"
                          type="button"
@@ -276,38 +363,95 @@ function App() {
         {view === 'chat' ? (
           <>
             <div className="messages">
-              {messages.map((item) => (
-                <article className={`message ${item.author}`} key={item.id}>
-                  {item.author === 'assistant' && (
-                    <button
-                      className="message-menu"
-                      type="button"
-                      aria-label="Mostrar memorias usadas"
-                      aria-expanded={memoryMessageId === item.id}
-                      onClick={() => setMemoryMessageId((current) => current === item.id ? null : item.id)}
-                    >
-                      ...
-                    </button>
-                  )}
-                  <p>{item.text}</p>
-                  {item.author === 'assistant' && (
-                    <>
-                      <div className="rating" aria-label="Avalie esta resposta">
-                        <button type="button" aria-label="Resposta positiva">&#128077;</button>
-                        <button type="button" aria-label="Resposta negativa">&#128078;</button>
-                      </div>
-                      {memoryMessageId === item.id && (
-                        <section className="message-memories" aria-label="Memorias usadas nesta resposta">
-                          <strong>Memorias</strong>
-                          {memories.map((memoryItem) => (
-                            <span key={memoryItem.id}>{memoryItem.text}</span>
-                          ))}
-                        </section>
-                      )}
-                    </>
-                  )}
-                </article>
-              ))}
+              {isBootstrapping && orderedChats.length === 0 && (
+                <p className="chat-status">Carregando conversas...</p>
+              )}
+              {!isBootstrapping && orderedChats.length === 0 && (
+                <p className="chat-status">Nenhum chat disponivel.</p>
+              )}
+              {appError && (
+                <p className="chat-status error" role="alert">{appError}</p>
+              )}
+              {messages.map((item) => {
+                const relatedMemories = (item.memoryIds ?? [])
+                  .map((memoryId) => memoriesById.get(memoryId))
+                  .filter((memoryItem): memoryItem is Memory => Boolean(memoryItem))
+
+                return (
+                  <article className={`message ${item.author}`} key={item.id}>
+                    {item.author === 'assistant' && (
+                      <button
+                        className="message-menu"
+                        type="button"
+                        aria-label="Mostrar memorias usadas"
+                        aria-expanded={memoryMessageId === item.id}
+                        onClick={() => setMemoryMessageId((current) => current === item.id ? null : item.id)}
+                      >
+                        ...
+                      </button>
+                    )}
+                    <p>{item.text}</p>
+                    {item.author === 'assistant' && (
+                      <>
+                        <div className="rating" aria-label="Avalie esta resposta">
+                          <button
+                            className={item.rating === 1 ? 'active' : ''}
+                            type="button"
+                            aria-label="Resposta positiva"
+                            aria-pressed={item.rating === 1}
+                            onClick={() => rateAssistantMessage(item.id, 1)}
+                          >
+                            &#128077;
+                          </button>
+                          <button
+                            className={item.rating === -1 ? 'active' : ''}
+                            type="button"
+                            aria-label="Resposta negativa"
+                            aria-pressed={item.rating === -1}
+                            onClick={() => rateAssistantMessage(item.id, -1)}
+                          >
+                            &#128078;
+                          </button>
+                        </div>
+                        {memoryMessageId === item.id && (
+                          <section className="message-memories" aria-label="Memorias usadas nesta resposta">
+                            <strong>memorias usadas:</strong>
+                            {relatedMemories.length > 0 ? (
+                              <ul className="message-memory-list">
+                                {relatedMemories.map((memoryItem) => (
+                                  <li className="message-memory-item" key={memoryItem.id}>
+                                    <span className="message-memory-text">{memoryItem.text}</span>
+                                    <span className="message-memory-actions">
+                                      <button type="button" aria-label="Apagar memoria" onClick={() => deleteMemory(memoryItem.id)}>
+                                        <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                                          <path d="M3 6H5H21" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                                          <path d="M8 6V4C8 3.44772 8.44772 3 9 3H15C15.5523 3 16 3.44772 16 4V6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                                          <path d="M19 6V19C19 20.1046 18.1046 21 17 21H7C5.89543 21 5 20.1046 5 19V6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                                          <path d="M10 11V17" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                                          <path d="M14 11V17" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                                        </svg>
+                                      </button>
+                                      <button type="button" aria-label="Editar memoria" onClick={() => openMemoryEditor(memoryItem)}>
+                                        <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                                          <path d="M15.4998 5.50067L18.3282 8.3291M13 21H21M3 21.0004L3.04745 20.6683C3.21536 19.4929 3.29932 18.9052 3.49029 18.3565C3.65975 17.8697 3.89124 17.4067 4.17906 16.979C4.50341 16.497 4.92319 16.0772 5.76274 15.2377L17.4107 3.58969C18.1918 2.80865 19.4581 2.80864 20.2392 3.58969C21.0202 4.37074 21.0202 5.63707 20.2392 6.41812L8.37744 18.2798C7.61579 19.0415 7.23497 19.4223 6.8012 19.7252C6.41618 19.994 6.00093 20.2167 5.56398 20.3887C5.07171 20.5824 4.54375 20.6889 3.48793 20.902L3 21.0004Z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                                        </svg>
+                                      </button>
+                                    </span>
+                                  </li>
+                                ))}
+                              </ul>
+                            ) : (
+                              <ul className="message-memory-list">
+                                <li className="message-memory-item empty">Sem memorias relevantes.</li>
+                              </ul>
+                            )}
+                          </section>
+                        )}
+                      </>
+                    )}
+                  </article>
+                )
+              })}
             </div>
 
             <form className="composer" onSubmit={sendMessage}>
@@ -319,8 +463,9 @@ function App() {
                 onChange={(event) => setMessage(event.target.value)}
                 placeholder="Escreva sua mensagem..."
                 aria-label="Mensagem"
+                maxLength={APP_CONFIG.maxCaracteresMemoryContext}
               />
-              <button type="submit">Enviar</button>
+              <button type="submit" disabled={isSendingMessage}>{isSendingMessage ? 'Enviando...' : 'Enviar'}</button>
             </form>
 
           </>
@@ -418,15 +563,15 @@ function App() {
                   <article className="cluster-card" key={cluster.id}>
                     <span className="cluster-count">{cluster.items.length} memorias</span>
                     <ul>
-                      {cluster.items.map((item) => (
-                        <li key={item.id} className="cluster-item">
-                          <span className="cluster-item-text">{item.text}</span>
-                          <span className="cluster-item-actions">
-                            <button type="button" aria-label="Editar memoria" onClick={() => openMemoryEditor(memories.find((memoryItem) => memoryItem.id === item.id) ?? memories[0])}>
-                              <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-                                <path d="M15.4998 5.50067L18.3282 8.3291M13 21H21M3 21.0004L3.04745 20.6683C3.21536 19.4929 3.29932 18.9052 3.49029 18.3565C3.65975 17.8697 3.89124 17.4067 4.17906 16.979C4.50341 16.497 4.92319 16.0772 5.76274 15.2377L17.4107 3.58969C18.1918 2.80865 19.4581 2.80864 20.2392 3.58969C21.0202 4.37074 21.0202 5.63707 20.2392 6.41812L8.37744 18.2798C7.61579 19.0415 7.23497 19.4223 6.8012 19.7252C6.41618 19.994 6.00093 20.2167 5.56398 20.3887C5.07171 20.5824 4.54375 20.6889 3.48793 20.902L3 21.0004Z" stroke="#ffffff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-                              </svg>
-                            </button>
+                       {cluster.items.map((item) => (
+                         <li key={item.id} className="cluster-item">
+                           <span className="cluster-item-text">{memoriesById.get(item.id)?.text ?? item.text}</span>
+                           <span className="cluster-item-actions">
+                             <button type="button" aria-label="Editar memoria" onClick={() => openMemoryEditor(memoriesById.get(item.id) ?? memories[0])}>
+                               <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                                 <path d="M15.4998 5.50067L18.3282 8.3291M13 21H21M3 21.0004L3.04745 20.6683C3.21536 19.4929 3.29932 18.9052 3.49029 18.3565C3.65975 17.8697 3.89124 17.4067 4.17906 16.979C4.50341 16.497 4.92319 16.0772 5.76274 15.2377L17.4107 3.58969C18.1918 2.80865 19.4581 2.80864 20.2392 3.58969C21.0202 4.37074 21.0202 5.63707 20.2392 6.41812L8.37744 18.2798C7.61579 19.0415 7.23497 19.4223 6.8012 19.7252C6.41618 19.994 6.00093 20.2167 5.56398 20.3887C5.07171 20.5824 4.54375 20.6889 3.48793 20.902L3 21.0004Z" stroke="#ffffff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                               </svg>
+                             </button>
                             <button type="button" aria-label="Apagar memoria" onClick={() => deleteMemory(item.id)}>✕</button>
                           </span>
                         </li>
@@ -453,7 +598,9 @@ function App() {
                 onChange={(event) => setMemory(event.target.value)}
                 placeholder="Ex.: Prefere respostas curtas"
                 aria-label="Nova memoria"
+                maxLength={APP_CONFIG.maxCaracteresMemory}
               />
+              <p>{memory.length}/{APP_CONFIG.maxCaracteresMemory}</p>
               <div className="modal-actions">
                 <button type="button" onClick={() => setIsMemoryOpen(false)}>Cancelar</button>
                 <button type="submit">{editingMemoryId === null ? 'Adicionar' : 'Salvar'}</button>
