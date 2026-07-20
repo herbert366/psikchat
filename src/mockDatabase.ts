@@ -36,7 +36,14 @@ export const db = {
   },
   updateMemory: (id: number, text: string) => {
     const today = new Date().toISOString().slice(0, 10)
-    memories = memories.map((memory) => memory.id === id ? { ...memory, text, updated_at: today } : memory)
+    memories = memories.map((memory) => memory.id === id ? {
+      ...memory,
+      text,
+      feedback_score: 0,
+      usage_count: 0,
+      created_at: today,
+      updated_at: today,
+    } : memory)
   },
   deleteMemory: (id: number) => { memories = memories.filter((memory) => memory.id !== id) },
 }

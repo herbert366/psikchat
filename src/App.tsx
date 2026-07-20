@@ -323,24 +323,6 @@ function App() {
               <button type="submit">Enviar</button>
             </form>
 
-            {isMemoryOpen && (
-              <div className="modal-backdrop" role="presentation" onMouseDown={() => setIsMemoryOpen(false)}>
-                <form className="memory-modal" onSubmit={editingMemoryId === null ? createMemory : editMemory} onMouseDown={(event) => event.stopPropagation()}>
-                  <h1>{editingMemoryId === null ? 'Criar memoria' : 'Editar memoria'}</h1>
-                  <input
-                    autoFocus
-                    value={memory}
-                    onChange={(event) => setMemory(event.target.value)}
-                    placeholder="Ex.: Prefere respostas curtas"
-                    aria-label="Nova memoria"
-                  />
-                  <div className="modal-actions">
-                    <button type="button" onClick={() => setIsMemoryOpen(false)}>Cancelar</button>
-                    <button type="submit">{editingMemoryId === null ? 'Adicionar' : 'Salvar'}</button>
-                  </div>
-                </form>
-              </div>
-            )}
           </>
         ) : (
           <div className="memories-view">
@@ -459,6 +441,24 @@ function App() {
                 <button type="button" disabled={currentClusterPage >= totalClusterPages - 1} onClick={() => setClusterPage((p) => p + 1)}>Seguinte</button>
               </div>
             </section>
+          </div>
+        )}
+        {isMemoryOpen && (
+          <div className="modal-backdrop" role="presentation" onMouseDown={() => setIsMemoryOpen(false)}>
+            <form className="memory-modal" onSubmit={editingMemoryId === null ? createMemory : editMemory} onMouseDown={(event) => event.stopPropagation()}>
+              <h1>{editingMemoryId === null ? 'Criar memoria' : 'Editar memoria'}</h1>
+              <input
+                autoFocus
+                value={memory}
+                onChange={(event) => setMemory(event.target.value)}
+                placeholder="Ex.: Prefere respostas curtas"
+                aria-label="Nova memoria"
+              />
+              <div className="modal-actions">
+                <button type="button" onClick={() => setIsMemoryOpen(false)}>Cancelar</button>
+                <button type="submit">{editingMemoryId === null ? 'Adicionar' : 'Salvar'}</button>
+              </div>
+            </form>
           </div>
         )}
       </section>
