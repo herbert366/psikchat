@@ -45,5 +45,14 @@ export const db = {
       updated_at: today,
     } : memory)
   },
+  updateMemoryFeedback: (ids: number[], delta: 1 | -1) => {
+    const memoryIds = new Set(ids)
+    const today = new Date().toISOString().slice(0, 10)
+    memories = memories.map((memory) => memoryIds.has(memory.id) ? {
+      ...memory,
+      feedback_score: memory.feedback_score + delta,
+      updated_at: today,
+    } : memory)
+  },
   deleteMemory: (id: number) => { memories = memories.filter((memory) => memory.id !== id) },
 }

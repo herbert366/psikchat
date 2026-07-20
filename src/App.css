@@ -340,6 +340,16 @@ button {
   opacity: 1;
 }
 
+.rating button.selected {
+  filter: none;
+  opacity: 1;
+}
+
+.rating button:disabled:not(.selected) {
+  cursor: default;
+  opacity: .25;
+}
+
 .message-memories {
   width: min(100%, 410px);
   margin-top: 14px;

@@ -7,6 +7,7 @@ import type { Memory } from './mockDatabase'
 
 type View = 'chat' | 'memories'
 type MemorySort = 'updated-desc' | 'updated-asc' | 'created-desc' | 'created-asc' | 'usage-desc' | 'usage-asc' | 'feedback-desc' | 'feedback-asc'
+type MessageFeedback = 1 | -1
 
 function normalizeSearchText(value: string) {
   return value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLocaleLowerCase()
@@ -23,6 +24,8 @@ function App() {
   const [isMemoryOpen, setIsMemoryOpen] = useState(false)
   const [editingMemoryId, setEditingMemoryId] = useState<number | null>(null)
   const [memoryMessageId, setMemoryMessageId] = useState<string | null>(null)
+  const [messageFeedback, setMessageFeedback] = useState<Record<string, MessageFeedback>>({})
+  const ratedMessageIds = useRef(new Set<string>())
   const [tablePage, setTablePage] = useState(0)
   const [memorySearch, setMemorySearch] = useState('')
   const [memorySort, setMemorySort] = useState<MemorySort>('updated-desc')
@@ -93,6 +96,14 @@ function App() {
     setMemory('')
     setEditingMemoryId(null)
     setIsMemoryOpen(false)
+  }
+
+  function rateAssistantMessage(messageId: string, delta: MessageFeedback) {
+    if (ratedMessageIds.current.has(messageId)) return
+    ratedMessageIds.current.add(messageId)
+    db.updateMemoryFeedback(memories.map((memoryItem) => memoryItem.id), delta)
+    setMemories(db.memories())
+    setMessageFeedback((current) => ({ ...current, [messageId]: delta }))
   }
 
   function openMemoryEditor(memoryItem: Memory) {
@@ -293,8 +304,26 @@ function App() {
                   {item.author === 'assistant' && (
                     <>
                       <div className="rating" aria-label="Avalie esta resposta">
-                        <button type="button" aria-label="Resposta positiva">&#128077;</button>
-                        <button type="button" aria-label="Resposta negativa">&#128078;</button>
+                        <button
+                          className={messageFeedback[item.id] === 1 ? 'selected' : ''}
+                          type="button"
+                          aria-label="Resposta positiva"
+                          aria-pressed={messageFeedback[item.id] === 1}
+                          disabled={Boolean(messageFeedback[item.id])}
+                          onClick={() => rateAssistantMessage(item.id, 1)}
+                        >
+                          &#128077;
+                        </button>
+                        <button
+                          className={messageFeedback[item.id] === -1 ? 'selected' : ''}
+                          type="button"
+                          aria-label="Resposta negativa"
+                          aria-pressed={messageFeedback[item.id] === -1}
+                          disabled={Boolean(messageFeedback[item.id])}
+                          onClick={() => rateAssistantMessage(item.id, -1)}
+                        >
+                          &#128078;
+                        </button>
                       </div>
                       {memoryMessageId === item.id && (
                         <section className="message-memories" aria-label="Memorias usadas nesta resposta">
