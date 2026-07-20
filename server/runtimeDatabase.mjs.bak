@@ -502,7 +502,7 @@ export function createRuntimeDatabase(options = {}) {
 
   function dedupeCandidates(candidates) {
     const entries = candidates
-      .map((candidate) => normalizeMemoryText(candidate))
+      .map((candidate) => toShortMemory(candidate, config.maxCaracteresMemory))
       .filter(Boolean)
       .map((candidate) => {
         const [rawLabel, ...rawValueParts] = candidate.split(':')

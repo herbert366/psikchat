@@ -1,4 +1,4 @@
-import type { Chat, Memory, Message } from './appTypes'
+import type { Chat, Memory, MemoryEvent, Message } from './appTypes'
 
 export type AppSnapshot = {
   chats: Chat[]
@@ -8,11 +8,12 @@ export type AppSnapshot = {
 export type StateResult = { state: AppSnapshot }
 export type SendMessageResult = StateResult & { userMessage: Message | null; assistantMessage: Message | null }
 export type CreateChatResult = StateResult & { chat: Chat | null }
+export type CreateMemoryResult = StateResult & { memoryEvent: MemoryEvent; eventMessage: Message | null }
 
 export type AppDataSource = {
   loadState: () => Promise<AppSnapshot>
   sendUserMessage: (chatId: number, text: string) => Promise<SendMessageResult>
-  createMemory: (text: string) => Promise<StateResult>
+  createMemory: (text: string, chatId?: number | null) => Promise<CreateMemoryResult>
   updateMemory: (memoryId: number, text: string) => Promise<StateResult>
   deleteMemory: (memoryId: number) => Promise<StateResult>
   rateAssistantMessage: (chatId: number, messageId: string, rating: -1 | 1) => Promise<StateResult>
@@ -51,9 +52,9 @@ export function createApiDataSource(apiBaseUrl = API_BASE_URL): AppDataSource {
       method: 'POST',
       body: JSON.stringify({ text }),
     }),
-    createMemory: (text) => requestFromApi<StateResult>('/api/memories', {
+    createMemory: (text, chatId) => requestFromApi<CreateMemoryResult>('/api/memories', {
       method: 'POST',
-      body: JSON.stringify({ text }),
+      body: JSON.stringify({ text, chatId }),
     }),
     updateMemory: (memoryId, text) => requestFromApi<StateResult>(`/api/memories/${memoryId}`, {
       method: 'PATCH',

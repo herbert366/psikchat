@@ -5,7 +5,6 @@ export type Message = {
   memoryIds?: number[]
   rating?: -1 | 0 | 1
   memoryEvent?: MemoryEvent
-  memoryEvents?: MemoryEvent[]
 }
 
 export type MemoryEvent = {

@@ -1,7 +1,7 @@
 .chat-shell {
   min-height: 100svh;
   display: grid;
-  grid-template-columns: 180px minmax(0, 1fr);
+  grid-template-columns: 260px minmax(0, 1fr);
   background: #080808;
   color: #f4f4f4;
 }
@@ -314,8 +314,53 @@ button {
   padding-right: 24px;
 }
 
+.message.system {
+  width: min(100%, 620px);
+  max-width: min(100%, 620px);
+  background: #111111;
+  border-left: 2px solid #7c3aed;
+}
+
 .message p {
+  margin: 0;
   white-space: pre-wrap;
+}
+
+.memory-event-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.memory-event-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  color: #f4f4f4;
+}
+
+.memory-event-header svg {
+  width: 28px;
+  height: 28px;
+  color: #f4f4f4;
+  flex: 0 0 auto;
+}
+
+.memory-event-header strong {
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.memory-event-emphasis {
+  margin-right: 8px;
+}
+
+.memory-event-emphasis.success {
+  color: #7ed957;
+}
+
+.memory-event-emphasis.danger {
+  color: #ff5f5f;
 }
 
 .message.typing {

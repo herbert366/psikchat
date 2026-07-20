@@ -221,7 +221,7 @@ const server = http.createServer(async (request, response) => {
 
     if (method === 'POST' && url.pathname === '/api/memories') {
       const body = await readBody(request)
-      sendJson(response, 200, await runtimeDb.createMemory(body.text ?? ''))
+      sendJson(response, 200, await runtimeDb.createMemory(body.text ?? '', { chatId: body.chatId ?? null }))
       return
     }
 

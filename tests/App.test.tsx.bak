@@ -57,7 +57,8 @@ describe('App', () => {
     await user.type(screen.getByRole('textbox', { name: 'Mensagem' }), 'O nome do meu cachorro é Billy')
     await user.click(screen.getByRole('button', { name: 'Enviar' }))
 
-    expect(await screen.findByText(/criou:/i)).toBeInTheDocument()
+    expect((await screen.findAllByText('Memoria atualizada', { selector: 'strong' })).length).toBeGreaterThan(0)
+    expect(screen.getByText(/criou:/i)).toBeInTheDocument()
     expect(screen.getByText(/user dog's name: Billy/i)).toBeInTheDocument()
     expect(await screen.findByText('Vou guardar que o nome do seu cachorro e Billy.')).toBeInTheDocument()
 
@@ -109,7 +110,8 @@ describe('App', () => {
     expect(screen.getByText(`11/${APP_CONFIG.maxCaracteresMemory}`)).toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: 'Adicionar' }))
 
-    expect(await screen.findByText(/criou:/i)).toBeInTheDocument()
+    expect((await screen.findAllByText('Memoria atualizada', { selector: 'strong' })).length).toBeGreaterThan(0)
+    expect(screen.getByText('criou:', { exact: false })).toBeInTheDocument()
 
     await user.click(screen.getAllByRole('button', { name: 'Memorias' })[0])
 
@@ -141,7 +143,8 @@ describe('App', () => {
     await user.type(screen.getByRole('textbox', { name: 'Nova memoria' }), 'Comparar cenarios agora')
     await user.click(screen.getByRole('button', { name: 'Adicionar' }))
 
-    expect(await screen.findByText(/rejeitou:/i)).toBeInTheDocument()
+    expect((await screen.findAllByText('Memoria rejeitada', { selector: 'strong' })).length).toBeGreaterThan(0)
+    expect(screen.getByText('rejeitou:', { exact: false })).toBeInTheDocument()
     expect(screen.getByText(/similar a "Comparar cenarios"/)).toBeInTheDocument()
   })
 
@@ -173,10 +176,9 @@ describe('App', () => {
     await user.click(screen.getByRole('button', { name: 'Opcoes de Novo chat' }))
     await user.click(screen.getByRole('menuitem', { name: 'Renomear' }))
 
-    const renameInput = screen.getByRole('textbox', { name: 'Renomear conversa' })
+    const renameInput = screen.getByRole('textbox', { name: 'Renomear chat' })
     await user.clear(renameInput)
-    await user.type(renameInput, 'Projeto de teste')
-    await user.click(screen.getByRole('button', { name: 'Renomear' }))
+    await user.type(renameInput, 'Projeto de teste{enter}')
     expect(screen.getByText('Projeto de teste')).toBeInTheDocument()
 
     await user.click(screen.getByRole('button', { name: 'Opcoes de Projeto de teste' }))
@@ -194,7 +196,7 @@ describe('App', () => {
     expect(screen.getByText('Como posso ajudar voce hoje?')).toBeInTheDocument()
   })
 
-  it('saves chat renames via modal submit and cancels via cancel button', async () => {
+  it('saves chat renames on blur and cancels them on escape', async () => {
     const user = userEvent.setup()
 
     await renderApp()
@@ -203,20 +205,19 @@ describe('App', () => {
     await user.click(screen.getByRole('button', { name: 'Opcoes de Novo chat' }))
     await user.click(screen.getByRole('menuitem', { name: 'Renomear' }))
 
-    const renameInput = screen.getByRole('textbox', { name: 'Renomear conversa' })
+    const renameInput = screen.getByRole('textbox', { name: 'Renomear chat' })
     await user.clear(renameInput)
     await user.type(renameInput, 'Rascunho pronto')
-    await user.click(screen.getByRole('button', { name: 'Renomear' }))
+    await user.tab()
 
     expect(await screen.findByText('Rascunho pronto')).toBeInTheDocument()
 
     await user.click(screen.getByRole('button', { name: 'Opcoes de Rascunho pronto' }))
     await user.click(screen.getByRole('menuitem', { name: 'Renomear' }))
 
-    const renameInputAgain = screen.getByRole('textbox', { name: 'Renomear conversa' })
+    const renameInputAgain = screen.getByRole('textbox', { name: 'Renomear chat' })
     await user.clear(renameInputAgain)
-    await user.type(renameInputAgain, 'Nao salvar')
-    await user.click(screen.getByRole('button', { name: 'Cancelar' }))
+    await user.type(renameInputAgain, 'Nao salvar{Escape}')
 
     expect(screen.getByText('Rascunho pronto')).toBeInTheDocument()
     expect(screen.queryByText('Nao salvar')).not.toBeInTheDocument()
@@ -417,7 +418,7 @@ describe('App', () => {
     await openMemoriesView(user)
 
     const clusterSection = screen.getByRole('region', { name: 'Agrupamentos de memorias' })
-    expect(within(clusterSection).getByText(/2\s+memorias/)).toBeInTheDocument()
+    expect(within(clusterSection).getByText('2 memorias')).toBeInTheDocument()
     expect(within(clusterSection).getByText("User's preferred language: Portuguese")).toBeInTheDocument()
     expect(within(clusterSection).getByText("User's favorite language: Portuguese")).toBeInTheDocument()
     expect(within(clusterSection).queryByText("User's dog age: 2 years")).not.toBeInTheDocument()

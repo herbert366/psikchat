@@ -109,7 +109,7 @@ describe('runtimeDatabase', () => {
     const createdMemory = runtimeDb.memories().find((memory) => memory.text === "user dog's name: Bob")
     expect(createdMemory).toBeDefined()
     const memoryEventMessage = runtimeDb.chats()[0]?.messages.find((message) => message.author === 'system')
-    expect(memoryEventMessage?.text).toContain("Memoria criada: \"user dog's name: Bob\".")
+    expect(memoryEventMessage?.text).toContain('Memoria criada: "user dog's name: Bob".')
 
     const secondTurn = await runtimeDb.sendUserMessage(chat!.id, 'Qual o nome do meu cachorro?')
     expect(secondTurn.assistantMessage?.text).toContain('Bob')
