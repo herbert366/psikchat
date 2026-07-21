@@ -4,13 +4,16 @@ import './App.css'
 import { APP_CONFIG } from './config'
 import { appDataSource } from './dataSource'
 import type { AppDataSource, AppSnapshot, StateResult } from './dataSource'
-import type { Chat, Memory, MemoryEvent, MemoryFeedback, Message } from './appTypes'
+import type { Chat, Memory, MemoryEmbeddingSimilarityPage, MemoryEvent, MemoryFeedback, MemoryStatus, Message } from './appTypes'
+import { MessageHoverActions } from './components/MessageHoverActions'
 
 type View = 'chat' | 'memories'
 type MemorySort = 'updated-desc' | 'updated-asc' | 'created-desc' | 'created-asc' | 'usage-desc' | 'usage-asc' | 'feedback-desc' | 'feedback-asc'
 type MemoryCluster = { id: number; items: Memory[]; similarityPercent: number }
 type QueuedMessage = { id: string; chatId: number; text: string }
 type OptimisticUserMessage = { id: string; chatId: number; text: string }
+type MemorySimilarityDebug = { text: string; result: MemoryEmbeddingSimilarityPage | null; error: string | null }
+type LlmPromptDialog = { title: string; text: string }
 
 function BookIcon() {
   return (
@@ -55,6 +58,43 @@ function renderMemoryFeedbackDebug(memoryFeedback: MemoryFeedback) {
   }
 
   return <p><span className="memory-event-emphasis">sem evidencia:</span> "{memoryFeedback.memoryText}"</p>
+}
+
+function sortMemoryStatusHistory(statusHistory: MemoryStatus[]) {
+  return [...statusHistory].sort((first, second) => second.at.localeCompare(first.at))
+}
+
+function renderMemoryStatusLabel(status: MemoryStatus['status']) {
+  return status === 'positive' ? 'positivo' : 'negativo'
+}
+
+function formatRelativeTime(value: string) {
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return value
+
+  const diffMs = Math.max(0, Date.now() - date.getTime())
+  const minuteMs = 60 * 1000
+  const hourMs = 60 * minuteMs
+  const dayMs = 24 * hourMs
+  const monthMs = 30 * dayMs
+
+  if (diffMs < hourMs) {
+    const minutes = Math.max(1, Math.floor(diffMs / minuteMs))
+    return `ha ${minutes} min`
+  }
+
+  if (diffMs < dayMs) {
+    const hours = Math.floor(diffMs / hourMs)
+    return `ha ${hours} ${hours === 1 ? 'hora' : 'horas'}`
+  }
+
+  if (diffMs < monthMs) {
+    const days = Math.floor(diffMs / dayMs)
+    return `ha ${days} ${days === 1 ? 'dia' : 'dias'}`
+  }
+
+  const months = Math.floor(diffMs / monthMs)
+  return `ha ${months} ${months === 1 ? 'mes' : 'meses'}`
 }
 
 function resolveMemoryEventTitle(memoryEvents: MemoryEvent[]) {
@@ -292,6 +332,9 @@ function App({ dataSource = appDataSource }: AppProps) {
   const [isMemoryOpen, setIsMemoryOpen] = useState(false)
   const [editingMemoryId, setEditingMemoryId] = useState<number | null>(null)
   const [memoryMessageId, setMemoryMessageId] = useState<string | null>(null)
+  const [llmPromptDialog, setLlmPromptDialog] = useState<LlmPromptDialog | null>(null)
+  const [memorySimilarityDebug, setMemorySimilarityDebug] = useState<MemorySimilarityDebug | null>(null)
+  const [isLoadingMemorySimilarityDebug, setIsLoadingMemorySimilarityDebug] = useState(false)
   const [tablePage, setTablePage] = useState(0)
   const [memorySearch, setMemorySearch] = useState('')
   const [memorySort, setMemorySort] = useState<MemorySort>('updated-desc')
@@ -544,6 +587,27 @@ function App({ dataSource = appDataSource }: AppProps) {
     syncStateOperation(dataSource.rateAssistantMessage(currentActiveChatId, messageId, rating), { preferredChatId: currentActiveChatId })
   }
 
+  function loadMemorySimilarityDebug(text: string, page: number) {
+    setIsLoadingMemorySimilarityDebug(true)
+    void dataSource.inspectMemoryEmbeddingSimilarity(text, page, APP_CONFIG.tablePageSize)
+      .then((result) => {
+        setMemorySimilarityDebug((current) => current?.text === text
+          ? { text, result, error: null }
+          : current)
+      })
+      .catch((error) => {
+        setMemorySimilarityDebug((current) => current?.text === text
+          ? { ...current, error: resolveErrorMessage(error) }
+          : current)
+      })
+      .finally(() => setIsLoadingMemorySimilarityDebug(false))
+  }
+
+  function openMemorySimilarityDebug(text: string) {
+    setMemorySimilarityDebug({ text, result: null, error: null })
+    loadMemorySimilarityDebug(text, 0)
+  }
+
   function navigate(target: View) {
     setIsMemoryOpen(false)
     setView(target)
@@ -772,6 +836,19 @@ function App({ dataSource = appDataSource }: AppProps) {
 
                 return (
                   <article className={`message ${item.author}`} key={item.id}>
+                    {item.author === 'user' && (
+                      <MessageHoverActions>
+                        <MessageHoverActions.Tools>
+                          <MessageHoverActions.Action
+                            aria-label="Depurar similaridade das memorias"
+                            onClick={() => openMemorySimilarityDebug(item.text)}
+                          >
+                            Similaridade
+                          </MessageHoverActions.Action>
+                        </MessageHoverActions.Tools>
+                        {renderMessageBody(item)}
+                      </MessageHoverActions>
+                    )}
                     {item.author === 'assistant' && (
                       <button
                         className="message-menu"
@@ -783,7 +860,22 @@ function App({ dataSource = appDataSource }: AppProps) {
                         ...
                       </button>
                     )}
-                    {renderMessageBody(item)}
+                    {item.author === 'system' && item.memoryPrompt ? (
+                      <MessageHoverActions>
+                        <MessageHoverActions.Tools>
+                          <MessageHoverActions.Action
+                            aria-label={item.memoryFeedbacks?.length ? 'Mostrar prompt de feedback' : 'Mostrar prompt de criacao de memoria'}
+                            onClick={() => setLlmPromptDialog({
+                              title: item.memoryFeedbacks?.length ? 'Prompt de feedback' : 'Prompt de criacao de memoria',
+                              text: item.memoryPrompt!,
+                            })}
+                          >
+                            Show prompt
+                          </MessageHoverActions.Action>
+                        </MessageHoverActions.Tools>
+                        {renderMessageBody(item)}
+                      </MessageHoverActions>
+                    ) : item.author !== 'user' && renderMessageBody(item)}
                     {item.author === 'assistant' && (
                       <>
                         <div className="rating" aria-label="Avalie esta resposta">
@@ -934,7 +1026,7 @@ function App({ dataSource = appDataSource }: AppProps) {
                 <thead>
                   <tr>
                     <th>Texto</th>
-                    <th>Feedback</th>
+                    <th>Status</th>
                     <th>Uso</th>
                     <th>Criado em</th>
                     <th>Atualizado em</th>
@@ -942,13 +1034,19 @@ function App({ dataSource = appDataSource }: AppProps) {
                   </tr>
                  </thead>
                  <tbody>
-                   {paginatedMemories.length > 0 ? paginatedMemories.map((m) => (
-                       <tr key={m.id}>
-                         <td>{m.text}</td>
-                         <td className="num">{m.feedback_score}</td>
-                         <td className="num">{m.usage_count}</td>
-                         <td>{m.created_at}</td>
-                         <td>{m.updated_at}</td>
+                    {paginatedMemories.length > 0 ? paginatedMemories.map((m) => (
+                        <tr key={m.id}>
+                          <td>{m.text}</td>
+                          <td>
+                            {m.statusHistory.length > 0 ? sortMemoryStatusHistory(m.statusHistory).map((item, index) => (
+                              <div key={`${item.status}-${item.at}-${index}`}>
+                                {renderMemoryStatusLabel(item.status)} · {formatRelativeTime(item.at)}
+                              </div>
+                            )) : '-'}
+                          </td>
+                          <td className="num">{m.usage_count}</td>
+                          <td>{m.created_at}</td>
+                          <td>{m.updated_at}</td>
                          <td className="memory-actions">
                            <button type="button" onClick={() => openMemoryEditor(m)}>Editar</button>
                            <button type="button" onClick={() => deleteMemory(m.id)}>Apagar</button>
@@ -1033,6 +1131,98 @@ function App({ dataSource = appDataSource }: AppProps) {
                 <button type="submit">{editingMemoryId === null ? 'Adicionar' : 'Salvar'}</button>
               </div>
             </form>
+          </div>
+        )}
+
+        {memorySimilarityDebug && (
+          <div className="modal-backdrop" role="presentation" onMouseDown={() => setMemorySimilarityDebug(null)}>
+            <section
+              className="memory-similarity-modal"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="memory-similarity-title"
+              onMouseDown={(event) => event.stopPropagation()}
+            >
+              <header className="memory-similarity-header">
+                <div>
+                  <h1 id="memory-similarity-title">Similaridade das memorias</h1>
+                  <p title={memorySimilarityDebug.text}>Mensagem: {memorySimilarityDebug.text}</p>
+                </div>
+                <button type="button" aria-label="Fechar diagnostico de similaridade" onClick={() => setMemorySimilarityDebug(null)}>Fechar</button>
+              </header>
+
+              {memorySimilarityDebug.error ? (
+                <p className="memory-similarity-error" role="alert">{memorySimilarityDebug.error}</p>
+              ) : isLoadingMemorySimilarityDebug && !memorySimilarityDebug.result ? (
+                <p className="memory-similarity-status">Calculando similaridades...</p>
+              ) : (
+                <>
+                  <div className="memory-similarity-table-wrap">
+                    <table className="memories-table" aria-label="Similaridade de embedding das memorias">
+                      <thead>
+                        <tr>
+                          <th>Memoria</th>
+                          <th className="num">Embedding</th>
+                          <th className="num">Feedback</th>
+                          <th className="num">Uso</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {memorySimilarityDebug.result?.items.length ? memorySimilarityDebug.result.items.map((memoryItem) => (
+                          <tr key={memoryItem.id}>
+                            <td>{memoryItem.text}</td>
+                            <td className="num">{memoryItem.embeddingSimilarityPercent}%</td>
+                            <td className="num">{memoryItem.feedback_score}</td>
+                            <td className="num">{memoryItem.usage_count}</td>
+                          </tr>
+                        )) : (
+                          <tr>
+                            <td className="empty-state" colSpan={4}>Nenhuma memoria salva.</td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                  {memorySimilarityDebug.result && (
+                    <div className="pagination" role="group" aria-label="Paginacao da similaridade de embedding">
+                      <button
+                        type="button"
+                        disabled={isLoadingMemorySimilarityDebug || memorySimilarityDebug.result.page === 0}
+                        onClick={() => loadMemorySimilarityDebug(memorySimilarityDebug.text, memorySimilarityDebug.result!.page - 1)}
+                      >
+                        Anterior
+                      </button>
+                      <span className="page-info">{memorySimilarityDebug.result.page + 1} de {memorySimilarityDebug.result.totalPages}</span>
+                      <button
+                        type="button"
+                        disabled={isLoadingMemorySimilarityDebug || memorySimilarityDebug.result.page >= memorySimilarityDebug.result.totalPages - 1}
+                        onClick={() => loadMemorySimilarityDebug(memorySimilarityDebug.text, memorySimilarityDebug.result!.page + 1)}
+                      >
+                        Seguinte
+                      </button>
+                    </div>
+                  )}
+                </>
+              )}
+            </section>
+          </div>
+        )}
+
+        {llmPromptDialog && (
+          <div className="modal-backdrop" role="presentation" onMouseDown={() => setLlmPromptDialog(null)}>
+            <section
+              className="memory-prompt-modal"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="memory-prompt-title"
+              onMouseDown={(event) => event.stopPropagation()}
+            >
+              <header className="memory-prompt-header">
+                <h1 id="memory-prompt-title">{llmPromptDialog.title}</h1>
+                <button type="button" aria-label="Fechar prompt" onClick={() => setLlmPromptDialog(null)}>Fechar</button>
+              </header>
+              <pre>{llmPromptDialog.text}</pre>
+            </section>
           </div>
         )}
 

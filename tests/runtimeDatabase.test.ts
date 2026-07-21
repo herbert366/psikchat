@@ -93,7 +93,7 @@ function createQuestionAwareLlmClient(): TestLlmClient {
 
       return prompt.includes('Uma pergunta nao declara um fato: nunca crie memoria a partir de perguntas')
         ? '[]'
-        : '["user preference about airplanes: No"]'
+        : '["gosto de aviao: nao"]'
     },
   }
 }
@@ -105,7 +105,7 @@ function createStubbornQuestionExtractionLlmClient(): TestLlmClient {
     },
     async generateText(messages: Array<{ content: string }>) {
       const prompt = messages.map((message) => message.content).join('\n')
-      if (prompt.includes('Retorne apenas um array JSON de strings')) return '["user likes sorvete"]'
+      if (prompt.includes('Retorne apenas um array JSON de strings')) return '["gosto de sorvete"]'
       return 'Resposta generica.'
     },
   }
@@ -118,9 +118,43 @@ function createFallbackExtractionLlmClient(): TestLlmClient {
     },
     async generateText(messages: Array<{ content: string }>) {
       const prompt = messages.map((message) => message.content).join('\n')
-      if (prompt.includes('Modo fallback:')) return '["i like praia"]'
+      if (prompt.includes('Modo fallback:')) return '["gosto de praia"]'
       if (prompt.includes('Retorne apenas um array JSON de strings')) return '[]'
       if (prompt.includes('Mensagem final do usuario: Eu gosto de praia')) return 'Voce mencionou que gosta de praia.'
+      return 'Resposta generica.'
+    },
+  }
+}
+
+function createFirstPersonMemoryLlmClient(): TestLlmClient {
+  return {
+    async embed(text: string) {
+      return buildEmbedding(text)
+    },
+    async generateText(messages: Array<{ content: string }>) {
+      const prompt = messages.map((message) => message.content).join('\n')
+      if (!prompt.includes('Retorne apenas um array JSON de strings')) return 'Resposta generica.'
+
+      return prompt.includes('Nunca escreva memorias sobre o proprio usuario com "user", "the user" ou "usuario".')
+        ? '["tenho dificuldade de escolher as melhores ideias para executar"]'
+        : '["user has difficulty choosing the best ideas to execute"]'
+    },
+  }
+}
+
+function createFallbackFirstPersonMemoryLlmClient(): TestLlmClient {
+  return {
+    async embed(text: string) {
+      return buildEmbedding(text)
+    },
+    async generateText(messages: Array<{ content: string }>) {
+      const prompt = messages.map((message) => message.content).join('\n')
+      if (prompt.includes('Modo fallback:')) {
+        return prompt.includes('Nunca escreva memorias sobre o proprio usuario com "user", "the user" ou "usuario".')
+          ? '["gosto de praia"]'
+          : '["user likes praia"]'
+      }
+      if (prompt.includes('Retorne apenas um array JSON de strings')) return '[]'
       return 'Resposta generica.'
     },
   }
@@ -138,15 +172,15 @@ function createHistorySensitiveLlmClient(): TestLlmClient {
       }
 
       if (prompt.includes('meu cachorro se chama Bob') && prompt.includes('Gosto de Ferrari')) {
-        return JSON.stringify(["i dog's name: Bob", 'i like Ferrari'])
+        return JSON.stringify(['nome do meu cachorro: Bob', 'gosto de Ferrari'])
       }
 
       if (prompt.includes('meu cachorro se chama Bob')) {
-        return JSON.stringify(["i dog's name: Bob"])
+        return JSON.stringify(['nome do meu cachorro: Bob'])
       }
 
       if (prompt.includes('Gosto de Ferrari')) {
-        return JSON.stringify(['i like Ferrari'])
+        return JSON.stringify(['gosto de Ferrari'])
       }
 
       return '[]'
@@ -183,6 +217,25 @@ function createFeedbackAwareLlmClient() {
       if (prompt.includes('Mensagem final do usuario:')) {
         assistantPrompts.push(prompt)
         return 'Resposta aprovada.'
+      }
+      return 'Resposta generica.'
+    },
+  }
+}
+
+function createPromptCaptureLlmClient() {
+  const assistantPrompts: string[] = []
+  return {
+    assistantPrompts,
+    async embed() {
+      return [1, 0, 0]
+    },
+    async generateText(messages: Array<{ content: string }>) {
+      const prompt = messages.map((message) => message.content).join('\n')
+      if (prompt.includes('Retorne apenas um array JSON de strings')) return '[]'
+      if (prompt.includes('Mensagem final do usuario:')) {
+        assistantPrompts.push(prompt)
+        return 'Preciso entender melhor seu contexto antes de opinar.'
       }
       return 'Resposta generica.'
     },
@@ -226,10 +279,10 @@ describe('runtimeDatabase', () => {
 
     await runtimeDb.sendUserMessage(chat!.id, 'Meu cachorro se chama Bob')
 
-    const createdMemory = runtimeDb.memories().find((memory) => memory.text === "i dog's name: Bob")
+    const createdMemory = runtimeDb.memories().find((memory) => memory.text === 'nome do meu cachorro: Bob')
     expect(createdMemory).toBeDefined()
     const memoryEventMessage = runtimeDb.chats()[0]?.messages.find((message) => message.author === 'system')
-    expect(memoryEventMessage?.text).toContain("Memoria criada: \"i dog's name: Bob\" (0% similar a \"nenhuma memoria existente\").")
+    expect(memoryEventMessage?.text).toContain('Memoria criada: "nome do meu cachorro: Bob" (0% similar a "nenhuma memoria existente").')
 
     const secondTurn = await runtimeDb.sendUserMessage(chat!.id, 'Qual o nome do meu cachorro?')
     expect(secondTurn.assistantMessage?.text).toContain('Bob')
@@ -246,18 +299,32 @@ describe('runtimeDatabase', () => {
 
     await runtimeDb.sendUserMessage(chat!.id, 'O nome do meu cachorro e Billy')
 
-    const createdMemory = runtimeDb.memories().find((memory) => memory.text === "i dog's name: Billy")
+    const createdMemory = runtimeDb.memories().find((memory) => memory.text === 'nome do meu cachorro: Billy')
     expect(createdMemory).toBeDefined()
 
     const secondTurn = await runtimeDb.sendUserMessage(chat!.id, 'Qual o nome do meu cachorro?')
     expect(secondTurn.assistantMessage?.text).toContain('Billy')
   })
 
+  it('escreve memorias pessoais em portugues na extracao principal', async () => {
+    runtimeDb = createEmptyRuntimeDatabase({ llmClient: createFirstPersonMemoryLlmClient() })
+
+    await runtimeDb.initialize()
+    const { chat } = await runtimeDb.createChat('Teste de primeira pessoa')
+
+    expect(chat).not.toBeNull()
+
+    await runtimeDb.sendUserMessage(chat!.id, 'Tenho dificuldade de escolher as melhores ideias para executar')
+
+    expect(runtimeDb.memories().map((memory) => memory.text)).toContain('tenho dificuldade de escolher as melhores ideias para executar')
+    expect(runtimeDb.memories().map((memory) => memory.text)).not.toContain('user has difficulty choosing the best ideas to execute')
+  })
+
   it('nao atribui ao cachorro da namorada o nome guardado para o cachorro do usuario', async () => {
     runtimeDb = createEmptyRuntimeDatabase({ llmClient: createOwnershipAwareLlmClient() })
 
     await runtimeDb.initialize()
-    await runtimeDb.createMemory("i dog's name: Billy")
+    await runtimeDb.createMemory('nome do meu cachorro: Billy')
     const { chat } = await runtimeDb.createChat('Teste de posse da memoria')
 
     expect(chat).not.toBeNull()
@@ -278,7 +345,7 @@ describe('runtimeDatabase', () => {
     await runtimeDb.sendUserMessage(chat!.id, 'Geralmente quando eu falar de sentimentos e voce nao souber opinar, me faca uma pergunta no final da sua mensagem')
 
     const createdMemory = runtimeDb.memories().find(
-      (memory) => memory.text === 'i prefer that for emotional topics you ask a question at end if unsure',
+      (memory) => memory.text === 'em temas emocionais, se nao souber opinar, faca uma pergunta no final',
     )
 
     expect(createdMemory).toBeDefined()
@@ -335,9 +402,23 @@ describe('runtimeDatabase', () => {
 
     await runtimeDb.sendUserMessage(chat!.id, 'Eu gosto de praia')
 
-    expect(runtimeDb.memories().map((memory) => memory.text)).toContain('i like praia')
+    expect(runtimeDb.memories().map((memory) => memory.text)).toContain('gosto de praia')
     const systemMessages = runtimeDb.chats()[0]?.messages.filter((message) => message.author === 'system') ?? []
-    expect(systemMessages.at(-1)?.text).toContain('Memoria criada: "i like praia"')
+    expect(systemMessages.at(-1)?.text).toContain('Memoria criada: "gosto de praia"')
+  })
+
+  it('escreve memorias pessoais em portugues tambem no fallback', async () => {
+    runtimeDb = createEmptyRuntimeDatabase({ llmClient: createFallbackFirstPersonMemoryLlmClient() })
+
+    await runtimeDb.initialize()
+    const { chat } = await runtimeDb.createChat('Teste de fallback em primeira pessoa')
+
+    expect(chat).not.toBeNull()
+
+    await runtimeDb.sendUserMessage(chat!.id, 'Eu gosto de praia')
+
+    expect(runtimeDb.memories().map((memory) => memory.text)).toContain('gosto de praia')
+    expect(runtimeDb.memories().map((memory) => memory.text)).not.toContain('user likes praia')
   })
 
   it('nao rejeita memorias antigas de outra mensagem ao extrair uma memoria nova', async () => {
@@ -354,15 +435,15 @@ describe('runtimeDatabase', () => {
     const systemMessages = runtimeDb.chats()[0]?.messages.filter((message) => message.author === 'system') ?? []
     const latestSystemMessage = systemMessages.at(-1)
 
-    expect(latestSystemMessage?.text).toContain('Memoria criada: "i like Ferrari" (0% similar a "nenhuma memoria existente").')
-    expect(latestSystemMessage?.text).not.toContain("Memoria rejeitada: ja existe algo equivalente a \"i dog's name: Bob\".")
+    expect(latestSystemMessage?.text).toContain('Memoria criada: "gosto de Ferrari" (0% similar a "nenhuma memoria existente").')
+    expect(latestSystemMessage?.text).not.toContain('Memoria rejeitada: ja existe algo equivalente a "nome do meu cachorro: Bob".')
   })
 
   it('inclui a similaridade da memoria mais parecida no debug de criacao automatica', async () => {
-    runtimeDb = createEmptyRuntimeDatabase({ llmClient: createMemoryCandidateLlmClient('user likes swimming pools') })
+    runtimeDb = createEmptyRuntimeDatabase({ llmClient: createMemoryCandidateLlmClient('gosto de piscinas para nadar') })
 
     await runtimeDb.initialize()
-    await runtimeDb.createMemory('user likes praia')
+    await runtimeDb.createMemory('gosto de praia')
     const { chat } = await runtimeDb.createChat('Teste de debug de similaridade')
 
     expect(chat).not.toBeNull()
@@ -370,7 +451,7 @@ describe('runtimeDatabase', () => {
     await runtimeDb.sendUserMessage(chat!.id, 'Eu gosto de piscinas para nadar')
 
     const latestSystemMessage = runtimeDb.chats()[0]?.messages.filter((message) => message.author === 'system').at(-1)
-    expect(latestSystemMessage?.text).toMatch(/Memoria criada: "user likes swimming pools" \(\d+% similar a "user likes praia"\)\./)
+    expect(latestSystemMessage?.text).toMatch(/Memoria criada: "gosto de piscinas para nadar" \(\d+% similar a "gosto de praia"\)\./)
   })
 
   it('registra debug quando a llm devolve uma memoria acima do limite configurado', async () => {
@@ -455,14 +536,14 @@ describe('runtimeDatabase', () => {
     runtimeDb = createEmptyRuntimeDatabase()
 
     await runtimeDb.initialize()
-    await runtimeDb.createMemory('user likes praia')
+    await runtimeDb.createMemory('gosto de praia')
     const { chat } = await runtimeDb.createChat('Teste de debug manual')
 
-    const result = await runtimeDb.createMemory('user likes clouds', { chatId: chat!.id })
+    const result = await runtimeDb.createMemory('gosto de nuvens', { chatId: chat!.id })
 
     expect(result.memoryEvent.status).toBe('created')
-    expect(result.memoryEvent.conflictingMemoryText).toBe('user likes praia')
-    expect(result.eventMessage?.text).toMatch(/Memoria criada: "user likes clouds" \(\d+% similar a "user likes praia"\)\./)
+    expect(result.memoryEvent.conflictingMemoryText).toBe('gosto de praia')
+    expect(result.eventMessage?.text).toMatch(/Memoria criada: "gosto de nuvens" \(\d+% similar a "gosto de praia"\)\./)
   })
 
   it('remove links de memoria de todos os chats que a referenciavam', async () => {
@@ -568,6 +649,26 @@ describe('runtimeDatabase', () => {
 
     expect(llmClient.assistantPrompts.at(-1)).toContain('Mensagens boas:\nResposta aprovada.')
     expect(llmClient.assistantPrompts.at(-1)).toContain('Historico de status: [{"status":"positive"')
+    expect(llmClient.assistantPrompts.at(-1)).toContain('As memorias sao contexto interno: use esse contexto em silencio e responda como uma pessoa normal.')
+    expect(llmClient.assistantPrompts.at(-1)).toContain('Se a pergunta for sobre gostos, preferencias ou afinidades, fale apenas desses itens; nao misture dificuldades, metas, instrucoes ou outros fatos pessoais fora do tema.')
+    expect(llmClient.assistantPrompts.at(-1)).toContain('Se houver contexto suficiente nas memorias e no chat, responda direto sem fazer perguntas de acompanhamento.')
+    expect(llmClient.assistantPrompts.at(-1)).toContain('Se o usuario pedir opiniao, conselho, ajuda para decidir, interpretar ou resolver algo da propria vida')
+    expect(llmClient.assistantPrompts.at(-1)).toContain('Se nenhuma memoria relevante tiver sido recuperada e o pedido envolver estilo de vida, rotina, trabalho, sentimentos, organizacao, metas, habitos, relacionamentos ou decisoes pessoais, nao responda com conselho generico.')
+    expect(llmClient.assistantPrompts.at(-1)).toContain('Prefira perguntas especificas sobre rotina, prioridades, restricoes, energia, prazo, contexto atual, pessoas envolvidas e o que ja foi tentado.')
+  })
+
+  it('instrui a llm a fazer perguntas especificas quando nao houver memoria relevante para opinar sobre a vida do usuario', async () => {
+    const llmClient = createPromptCaptureLlmClient()
+    runtimeDb = createEmptyRuntimeDatabase({ llmClient })
+
+    await runtimeDb.initialize()
+    const { chat } = await runtimeDb.createChat('Teste de pergunta sem memoria relevante')
+
+    await runtimeDb.sendUserMessage(chat!.id, 'Como eu consigo tomar melhores decisoes?')
+
+    expect(llmClient.assistantPrompts.at(-1)).toContain('Memorias relevantes recuperadas para esta resposta:\nConsidere a lista abaixo como o conjunto de fatos candidatos a responder o pedido do usuario. Se varios itens forem relevantes, cite todos.\nNao trate a ordem da lista como permissao para ignorar os itens seguintes.\nSe aparecerem memorias complementares sobre gostos, preferencias, idioma, contexto ou fatos pessoais, combine os itens compativeis numa resposta so.\n(nenhuma memoria relevante)')
+    expect(llmClient.assistantPrompts.at(-1)).toContain('Se nenhuma memoria relevante tiver sido recuperada e o pedido envolver estilo de vida, rotina, trabalho, sentimentos, organizacao, metas, habitos, relacionamentos ou decisoes pessoais, nao responda com conselho generico.')
+    expect(llmClient.assistantPrompts.at(-1)).toContain('Evite perguntas vagas como "quer que eu aprofunde?" ou "me conte mais sobre voce".')
   })
 
   it('anexa info estruturada dos feedbacks automaticos ao chat', async () => {

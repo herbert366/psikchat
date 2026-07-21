@@ -3,17 +3,21 @@ const config = {
   maxCaracteresMemoryToCreateMemory: 500,
   maxCaracteresMemoryContext: 500,
   similarityThresholdToCreate: 0.85,
-  embeddingSimilarityThreshold: 0.4
+  embeddingSimilarityThreshold: 0.4,
 }
 
 function toPercent(score) {
   return Math.round(score * 100)
 }
 
-
 memoriesDb.embeddingsSearch = function ({ chat_text, max_memories = 20 }) {
-  let memories = memoriesDb.map(memory => ({ ...memory, similarity: memory.embeddingSimilarity(chat_text) }))
-  memories = memories.filter(memory => memory.similarity > config.embeddingSimilarityThreshold)
+  let memories = memoriesDb.map(memory => ({
+    ...memory,
+    similarity: memory.embeddingSimilarity(chat_text),
+  }))
+  memories = memories.filter(
+    memory => memory.similarity > config.embeddingSimilarityThreshold,
+  )
 
   const memoriesDataScores = memories.map(memory => {
     const lastHistory = memory.statusHistory[memory.statusHistory.length - 1]
@@ -21,32 +25,43 @@ memoriesDb.embeddingsSearch = function ({ chat_text, max_memories = 20 }) {
     return {
       memoryDataToLLm: {
         ...memory,
-        statusHistory: memory.statusHistory.slice(-10).map(item => ({ status: item.status, atDays: timeDays(item.at) }))
+        statusHistory: memory.statusHistory
+          .slice(-10)
+          .map(item => ({ status: item.status, atDays: timeDays(item.at) })),
       },
-      score: -(lastHistory ? timeDays(lastHistory.at) : 0) * 1 //qnt mais recente melhor
-        + memory.usage_count * 0.4
-        + memory.similarity * 0.7
+      score:
+        -(lastHistory ? timeDays(lastHistory.at) : 0) * 1 + //qnt mais recente melhor
+        memory.usage_count * 0.4 +
+        memory.similarity * 0.7,
     }
   })
 
-  return memoriesDataScores.sort((a, b) => b.score - a.score).slice(0, max_memories).map(item => item.memoryDataToLLm)
+  return memoriesDataScores
+    .sort((a, b) => b.score - a.score)
+    .slice(0, max_memories)
+    .map(item => item.memoryDataToLLm)
 }
-
 
 const historyChat = {
   id: 1,
-  title: "Conversa sobre RAG",
+  title: 'Conversa sobre RAG',
   entries: [
-    { id: 1, role: "user", content: "Oi" },
-    { id: 2, role: "assistant", content: "Olá!" },
-    { id: 3, role: "user", content: "Como funciona RAG?" }
-  ]
+    { id: 1, role: 'user', content: 'Oi' },
+    { id: 2, role: 'assistant', content: 'Olá!' },
+    { id: 3, role: 'user', content: 'Como funciona RAG?' },
+  ],
 }
 
-historyChat.chat_text_without_last = historyChat.entries.slice(0, -1).map(entry => entry.content).join("\n")
-historyChat.chat_text = historyChat.entries.map(entry => entry.content).join("\n")
-historyChat.lastUserMessage = historyChat.entries.filter(entry => entry.role === "user").at(-1)
-
+historyChat.chat_text_without_last = historyChat.entries
+  .slice(0, -1)
+  .map(entry => entry.content)
+  .join('\n')
+historyChat.chat_text = historyChat.entries
+  .map(entry => entry.content)
+  .join('\n')
+historyChat.lastUserMessage = historyChat.entries
+  .filter(entry => entry.role === 'user')
+  .at(-1)
 
 function findMemories(chat_text) {
   const memories = memoriesDb.embeddingsSearch({ chat_text })
@@ -54,18 +69,17 @@ function findMemories(chat_text) {
   memories.forEach(memory => {
     memoriesDb.update(memory.id, {
       usage_count: memory.usage_count + 1,
-      updated_at: now()
+      updated_at: now(),
     })
   })
 
   return memories
 }
 
-
 function feedbackMemories(lastUserMessage) {
   const memories = memoriesDb.embeddingsSearch({
     chat_text: lastUserMessage.content,
-    max_memories: 20
+    max_memories: 20,
   })
 
   if (memories.length === 0) return []
@@ -80,7 +94,7 @@ function feedbackMemories(lastUserMessage) {
     score: 1 se a mensagem confirma ou se relaciona diretamente com a memoria;
     score: -1 se a mensagem contradiz a memoria;
     score: 0 se nao ha evidencia suficiente.
-    `
+    `,
   })
 
   try {
@@ -96,28 +110,27 @@ function feedbackMemories(lastUserMessage) {
         updated_at: now(),
         statusHistory: [
           ...memory.statusHistory,
-          { status: score > 0 ? "positive" : "negative", score, at: now() }
-        ]
+          { status: score > 0 ? 'positive' : 'negative', score, at: now() },
+        ],
       })
     })
 
-
     app.createdInfos({
-      title: "Feedbacks",
-      content: JSON.stringify(feedbacks, null, 2)
+      title: 'Feedbacks',
+      content: JSON.stringify(feedbacks, null, 2),
     })
 
     return feedbacks
-  }
-  catch (error) {
+  } catch (error) {
     app.toast.persistentLog(error)
     return []
   }
 }
 
-
 function createNewMemories(historyChat) {
-  const lastSnniptMessages = historyChat.chat_text.slice(-config.maxCaracteresMemoryToCreateMemory)
+  const lastSnniptMessages = historyChat.chat_text.slice(
+    -config.maxCaracteresMemoryToCreateMemory,
+  )
 
   const newMemoryNamesStr = llm({
     prompt: `
@@ -125,13 +138,16 @@ function createNewMemories(historyChat) {
     ${lastSnniptMessages}
 
     MemoriesAlreadyCreated:
-    ${memoriesDb.embeddingsSearch({ chat_text: lastSnniptMessages, max_memories: 20 }).map(memory => memory.text).join('\n')}
+    ${memoriesDb
+      .embeddingsSearch({ chat_text: lastSnniptMessages, max_memories: 20 })
+      .map(memory => memory.text)
+      .join('\n')}
 
     Crie novas memorias com base no chat acima e ignore as que já foram criadas
 
     retorne no formato ["..."]
     as memorias devem ter no máximo ${config.maxCaracteresMemory} caracteres
-    `
+    `,
   })
 
   try {
@@ -143,88 +159,96 @@ function createNewMemories(historyChat) {
       return {
         text: memory,
         similarity: mostSimilar?.similarity ?? 0,
-        conflictingMemoryText: mostSimilar?.text ?? "nenhuma memoria existente"
+        conflictingMemoryText: mostSimilar?.text ?? 'nenhuma memoria existente',
       }
     })
 
-    const newMemoriesFilted = newMemoryCandidates.filter(memory =>
-      memory.text.length <= config.maxCaracteresMemory &&
-      memoriesDb.getMostSimilar(memory.text, config.similarityThresholdToCreate).length === 0
+    const newMemoriesFilted = newMemoryCandidates.filter(
+      memory =>
+        memory.text.length <= config.maxCaracteresMemory &&
+        memoriesDb.getMostSimilar(
+          memory.text,
+          config.similarityThresholdToCreate,
+        ).length === 0,
     )
 
     const memoriesRejeitadas = {
-      maxCaracteresMemory: newMemoryCandidates.filter(memory => memory.text.length > config.maxCaracteresMemory),
-      tooSimilar: newMemoryCandidates.filter(memory =>
-        memory.text.length <= config.maxCaracteresMemory &&
-        !newMemoriesFilted.includes(memory)
-      )
+      maxCaracteresMemory: newMemoryCandidates.filter(
+        memory => memory.text.length > config.maxCaracteresMemory,
+      ),
+      tooSimilar: newMemoryCandidates.filter(
+        memory =>
+          memory.text.length <= config.maxCaracteresMemory &&
+          !newMemoriesFilted.includes(memory),
+      ),
     }
 
     app.memoriesCreatedInfos({
       rejeitadas: memoriesRejeitadas,
-      titulo: newMemoriesFilted.length === 1 ? "Memoria atualizada" : "Memorias atualizadas",
+      titulo:
+        newMemoriesFilted.length === 1
+          ? 'Memoria atualizada'
+          : 'Memorias atualizadas',
       criadas: newMemoriesFilted.map(memory => ({
         text: memory.text,
         similarityPercent: toPercent(memory.similarity),
         conflictingMemoryText: memory.conflictingMemoryText,
-        detail: `criou: "${memory.text}" (${toPercent(memory.similarity)}% similar a "${memory.conflictingMemoryText}")`
-      }))
+        detail: `criou: "${memory.text}" (${toPercent(memory.similarity)}% similar a "${memory.conflictingMemoryText}")`,
+      })),
     })
 
-    memoriesDb.create(newMemoriesFilted.map(memory => ({
-      text: memory.text,
-      created_at: now(),
-      updated_at: now(),
-      usage_count: 0,
-      statusHistory: [],
-      embedding: createEmbedding(memory.text)
-    })))
-  }
-  catch (error) {
+    memoriesDb.create(
+      newMemoriesFilted.map(memory => ({
+        text: memory.text,
+        created_at: now(),
+        updated_at: now(),
+        usage_count: 0,
+        statusHistory: [],
+        embedding: createEmbedding(memory.text),
+      })),
+    )
+  } catch (error) {
     app.toast.persistentLog(error)
   }
 }
-
 
 function setMemoryStatus(memory_id, status) {
   const memory = memoriesDb.get(memory_id)
 
   memoriesDb.update(memory_id, {
     updated_at: now(),
-    statusHistory: [
-      ...memory.statusHistory,
-      { status, at: now() }
-    ]
+    statusHistory: [...memory.statusHistory, { status, at: now() }],
   })
 }
 
-
 function saveMessageFeedback({ chat_id, message_id, status }) {
-  if (messageIsNotFromAI(message_id)) throw new Error("Message is not from AI, não tem como dá feedback em sua propria mensagem de user")
+  if (messageIsNotFromAI(message_id))
+    throw new Error(
+      'Message is not from AI, não tem como dá feedback em sua propria mensagem de user',
+    )
 
   const chat = chatsDb.get(chat_id)
-  const message = chat.history_chat_json.entries.find(entry => entry.id === message_id)
+  const message = chat.history_chat_json.entries.find(
+    entry => entry.id === message_id,
+  )
 
   mensagensMemoryDb.create({
     chat_id,
     message_id,
-    type: status === "positive" ? "good" : "bad",
+    type: status === 'positive' ? 'good' : 'bad',
     content: message.content,
     created_at: now(),
-    embedding: createEmbedding(message.content)
+    embedding: createEmbedding(message.content),
   })
 }
 
-
 function onMessageThumbUp({ chat_id, message_id }) {
-  saveMessageFeedback({ chat_id, message_id, status: "positive" })
+  saveMessageFeedback({ chat_id, message_id, status: 'positive' })
 }
-
 
 function onMessageThumbDown({ chat_id, message_id }) {
-  saveMessageFeedback({ chat_id, message_id, status: "negative" })
+  saveMessageFeedback({ chat_id, message_id, status: 'negative' })
 }
-
 
 function agentRespond(historyChat) {
   feedbackMemories(historyChat.lastUserMessage)
@@ -235,13 +259,13 @@ function agentRespond(historyChat) {
   const memories = findMemories(allChat)
 
   const goodMessages = mensagensMemoryDb.findFromEmbeddings({
-    type: "good",
-    query: lastUserMessage.content
+    type: 'good',
+    query: lastUserMessage.content,
   })
 
   const badMessages = mensagensMemoryDb.findFromEmbeddings({
-    type: "bad",
-    query: lastUserMessage.content
+    type: 'bad',
+    query: lastUserMessage.content,
   })
 
   const message = llm({
@@ -254,28 +278,58 @@ function agentRespond(historyChat) {
 
     | Memory | Status History |
     |--------|----------------|
-    ${memories.map(memory =>
-      `| ${memory.text} | ${JSON.stringify(memory.statusHistory)} |`
-    ).join('\n')}
+    ${memories
+      .map(
+        memory =>
+          `| ${memory.text} | ${JSON.stringify(memory.statusHistory)} |`,
+      )
+      .join('\n')}
 
     Chat:
     ${historyChat.chat_text.slice(-config.maxCaracteresMemoryContext)}
 
     Com base nas memorias, nas mensagens boas e ruins e no chat,
     responda a mensagem do user: ${lastUserMessage.content}
-    `
+    `,
   })
 
   historyChat.entries.push({
     id: generateId(),
-    role: "assistant",
-    content: message
+    role: 'assistant',
+    content: message,
   })
 
   chatsDb.update(historyChat.id, {
     updated_at: now(),
-    history_chat_json: historyChat
+    history_chat_json: historyChat,
   })
 
   return message
+}
+
+//////// UI ///////////
+
+function Message({ item }) {
+  const [isSimilarityOpen, setIsSimilarityOpen] = useState(false)
+
+  return (
+    <>
+      <MessageHoverActions>
+        <MessageHoverActions.Tools>
+          <MessageHoverActions.Action onClick={() => setIsSimilarityOpen(true)}>
+            Similaridade
+          </MessageHoverActions.Action>
+        </MessageHoverActions.Tools>
+
+        <p>{item.text}</p>
+      </MessageHoverActions>
+
+      {isSimilarityOpen && (
+        <SimilarityModal
+          messageText={item.text}
+          onClose={() => setIsSimilarityOpen(false)}
+        />
+      )}
+    </>
+  )
 }

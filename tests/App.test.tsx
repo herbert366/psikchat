@@ -83,8 +83,51 @@ describe('App', () => {
     await user.click(memoryButtons.at(-1)!)
 
     const memoryPanel = screen.getByLabelText('Memorias usadas nesta resposta')
-    expect(within(memoryPanel).getByText("i dog's name: Billy")).toBeInTheDocument()
-    expect(within(memoryPanel).queryByText("i dog's name:")).not.toBeInTheDocument()
+    expect(within(memoryPanel).getByText('nome do meu cachorro: Billy')).toBeInTheDocument()
+    expect(within(memoryPanel).queryByText('nome do meu cachorro:')).not.toBeInTheDocument()
+  })
+
+  it('shows the exact memory-creation prompt from a memory event card', async () => {
+    await harness?.cleanup()
+    harness = await createSqliteAppHarness({
+      chats: [
+        {
+          id: 1,
+          title: 'Prompt de memoria',
+          created_at: '2026-07-20',
+          updated_at: '2026-07-20',
+          pinned: 0,
+          messages: [
+            { id: 'message-1', author: 'assistant', text: 'Como posso ajudar voce hoje?' },
+            {
+              id: 'memory-event-1',
+              author: 'system',
+              text: 'Memoria criada: "nome do meu cachorro: Billy".',
+              memoryPrompt: 'system:\nVoce extrai memorias curtas e reutilizaveis de conversas.\n\nuser:\nUltima mensagem do usuario:\nO nome do meu cachorro e Billy',
+              memoryEvents: [{
+                action: 'create',
+                status: 'created',
+                reason: 'created',
+                sourceText: 'O nome do meu cachorro e Billy',
+                storedText: 'nome do meu cachorro: Billy',
+                detail: 'Memoria criada: "nome do meu cachorro: Billy".',
+              }],
+            },
+          ],
+        },
+      ],
+      memories: [],
+    })
+
+    const user = userEvent.setup()
+    await renderApp()
+
+    const showPrompt = await screen.findByRole('button', { name: 'Mostrar prompt de criacao de memoria' })
+    await user.click(showPrompt)
+
+    const dialog = screen.getByRole('dialog', { name: 'Prompt de criacao de memoria' })
+    expect(within(dialog).getByText(/Voce extrai memorias curtas e reutilizaveis/)).toBeInTheDocument()
+    expect(within(dialog).getByText(/O nome do meu cachorro e Billy/)).toBeInTheDocument()
   })
 
   it('shows rejection details only for the current extraction attempt', async () => {
@@ -117,8 +160,8 @@ describe('App', () => {
     await user.type(screen.getByRole('textbox', { name: 'Mensagem' }), 'Gosto de Ferrari')
     await user.click(screen.getByRole('button', { name: 'Enviar' }))
 
-    expect(await screen.findByText(/i like Ferrari/i)).toBeInTheDocument()
-    expect(screen.queryByText(/memoria duplicada de "i dog's name: Bob"/i)).not.toBeInTheDocument()
+    expect(await screen.findByText(/gosto de Ferrari/i)).toBeInTheDocument()
+    expect(screen.queryByText(/memoria duplicada de "nome do meu cachorro: Bob"/i)).not.toBeInTheDocument()
   })
 
   it('ignores blank messages and supports negative feedback on assistant replies', async () => {

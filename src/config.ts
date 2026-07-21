@@ -5,7 +5,7 @@ export const APP_CONFIG = {
   maxCaracteresMemoryToCreateMemory: 500,
   maxCaracteresMemoryContext: 500,
   maxMemoriesPerReply: 20,
-  embeddingSimilarityThreshold: 0.4,
+  embeddingSimilarityThreshold: 0.3,
   similarityThresholdToCreate: 0.86,
   memoryClusterSimilarityThreshold: 0.55,
   memoryClusterLexicalFloor: 0.3,

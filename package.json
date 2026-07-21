@@ -13,6 +13,7 @@
     "lint": "eslint .",
     "preview": "vite preview",
     "smoke:memory": "node --env-file=.env server/smoke-test.mjs",
+    "test:memory-prompt": "node --env-file=.env server/memoryPromptTest.mjs",
     "test": "vitest run",
     "test:watch": "vitest"
   },

@@ -9,14 +9,15 @@ type SeedChat = {
   messages: Message[]
 }
 
-type SeedMemory = {
-  id: number
-  text: string
-  feedback_score: number
-  usage_count: number
-  created_at: string
-  updated_at: string
-}
+ type SeedMemory = {
+   id: number
+   text: string
+   feedback_score: number
+   usage_count: number
+   created_at: string
+   updated_at: string
+   statusHistory?: Array<{ status: 'positive' | 'negative'; at: string }>
+ }
 
 export const TEST_SEED_DATA: { chats: SeedChat[]; memories: SeedMemory[] } = {
   chats: [

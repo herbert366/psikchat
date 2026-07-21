@@ -31,14 +31,14 @@ function buildMemoryCandidates(prompt) {
   const candidates = []
 
   if (normalizedPrompt.includes('meu cachorro se chama bob')) {
-    candidates.push("i dog's name: Bob")
+    candidates.push('nome do meu cachorro: Bob')
   }
 
   if (normalizedPrompt.includes('o nome do meu cachorro e billy')) {
     candidates.push(
-      prompt.includes('Formato obrigatorio: escreva cada memoria em ingles como "titulo semantico: valor concreto".')
-        ? "i dog's name: Billy"
-        : "i dog's name:",
+      prompt.includes('Formato obrigatorio: escreva cada memoria em portugues como "titulo semantico: valor concreto" ou, quando ficar mais natural, como uma frase curta em primeira pessoa.')
+        ? 'nome do meu cachorro: Billy'
+        : 'nome do meu cachorro:',
     )
   }
 
@@ -55,14 +55,14 @@ function buildMemoryCandidates(prompt) {
   }
 
   if (normalizedPrompt.includes('gosto de ferrari')) {
-    candidates.push('i like Ferrari')
+    candidates.push('gosto de Ferrari')
   }
 
   if (
     normalizedPrompt.includes('quando eu falar de sentimentos')
     && normalizedPrompt.includes('me faca uma pergunta no final')
   ) {
-    candidates.push('i prefer that for emotional topics you ask a question at end if unsure')
+    candidates.push('em temas emocionais, se nao souber opinar, faca uma pergunta no final')
   }
 
   return JSON.stringify(candidates)
@@ -71,13 +71,13 @@ function buildMemoryCandidates(prompt) {
 function buildAssistantReply(prompt) {
   const normalizedPrompt = normalizeText(prompt)
 
-  if (normalizedPrompt.includes('qual o nome do meu cachorro?') && normalizedPrompt.includes("i dog's name: bob")) {
+  if (normalizedPrompt.includes('qual o nome do meu cachorro?') && normalizedPrompt.includes('nome do meu cachorro: bob')) {
     return 'O nome do seu cachorro e Bob.'
   }
 
   if (
     normalizedPrompt.includes('qual o nome do meu cachorro?')
-    && normalizedPrompt.includes("i dog's name: billy")
+    && normalizedPrompt.includes('nome do meu cachorro: billy')
   ) {
     return 'O nome do seu cachorro e Billy.'
   }

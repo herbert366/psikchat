@@ -56,3 +56,11 @@ Quando o usuario citar `pseudo-index.jsp`, siga esta ordem:
 - esquecer que o banco real e SQLite e que o app depende da API local.
 - adicionar matching hardcoded no motor de memoria com listas manuais de sinonimos, categorias, intents ou regexes especificas para cobrir perguntas como atalho de recuperacao;
 - mascarar falhas de embedding, ranking ou qualidade de memoria com heuristicas textuais ad hoc em vez de melhorar a representacao, os dados ou o fluxo real.
+
+## Preferencias de React
+
+- em React, preferir composicao declarativa com JSX usando tags como `<Component />`, `<Component.Header />`, `<Component.Content />` e semelhantes;
+- evitar render props e `children` como funcao dentro de JSX quando a mesma ideia puder ser expressa com composicao por tags; exemplo a evitar: `<Tools>{({ open }) => ...}</Tools>`;
+- evitar APIs baseadas em callback para montar pedaços de interface, como `panel={() => ...}`, `tools={() => ...}` ou `content={() => ...}`, salvo quando houver necessidade tecnica real e clara;
+- ao desenhar components compostos, preferir slots declarativos nomeados em JSX no estilo compound component e padroes parecidos com shadcn/radix;
+- quando houver duas abordagens corretas, preferir a mais legivel no markup, com hierarquia visual clara e sem funcoes inline para descrever estrutura de UI.

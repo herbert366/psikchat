@@ -8,6 +8,7 @@ export type Message = {
   memoryEvent?: MemoryEvent
   memoryEvents?: MemoryEvent[]
   memoryFeedbacks?: MemoryFeedback[]
+  memoryPrompt?: string
 }
 
 export type MemoryMatch = {
@@ -54,6 +55,18 @@ export type Memory = {
   usage_count: number
   embedding: number[]
   statusHistory: MemoryStatus[]
+}
+
+export type MemoryEmbeddingSimilarity = Pick<Memory, 'id' | 'text' | 'created_at' | 'updated_at' | 'feedback_score' | 'usage_count'> & {
+  embeddingSimilarityPercent: number
+}
+
+export type MemoryEmbeddingSimilarityPage = {
+  items: MemoryEmbeddingSimilarity[]
+  page: number
+  pageSize: number
+  total: number
+  totalPages: number
 }
 
 export type Chat = {

@@ -19,14 +19,14 @@ function removeIfExists(filePath: string | null) {
 function createHighSimilarityMemoryLlmClient() {
   return {
     async embed(text: string) {
-      if (text === 'prefers concise answers') return [1, 0, 0]
-      if (text === 'likes short replies') return [0.9, 0.1, 0]
+      if (text === 'prefere respostas objetivas') return [1, 0, 0]
+      if (text === 'prefere respostas curtas') return [0.9, 0.1, 0]
       return buildEmbedding(text)
     },
     async generateText(messages: Array<{ content: string }>) {
       const prompt = messages.map((message) => message.content).join('\n')
       if (prompt.includes('Retorne apenas um array JSON de strings')) {
-        return JSON.stringify(['likes short replies'])
+        return JSON.stringify(['prefere respostas curtas'])
       }
 
       return 'Resposta generica.'
@@ -37,14 +37,14 @@ function createHighSimilarityMemoryLlmClient() {
 function createBelowThresholdDuplicateLlmClient() {
   return {
     async embed(text: string) {
-      if (text === 'user likes airplanes') return [1, 0, 0]
-      if (text === 'user likes airplanes a lot') return [0.8, 0.6, 0]
+      if (text === 'gosto de avioes') return [1, 0, 0]
+      if (text === 'gosto muito de avioes') return [0.8, 0.6, 0]
       return buildEmbedding(text)
     },
     async generateText(messages: Array<{ content: string }>) {
       const prompt = messages.map((message) => message.content).join('\n')
       if (prompt.includes('Retorne apenas um array JSON de strings')) {
-        return JSON.stringify(['user likes airplanes a lot'])
+        return JSON.stringify(['gosto muito de avioes'])
       }
 
       return 'Resposta generica.'
@@ -72,14 +72,14 @@ describe('runtimeDatabase memory similarity guard', () => {
     })
 
     await runtimeDb.initialize()
-    await runtimeDb.createMemory('prefers concise answers')
+    await runtimeDb.createMemory('prefere respostas objetivas')
     const { chat } = await runtimeDb.createChat('Teste de similaridade alta')
 
     expect(chat).not.toBeNull()
 
     await runtimeDb.sendUserMessage(chat!.id, 'Prefiro respostas curtas')
 
-    expect(runtimeDb.memories().map((memory) => memory.text)).toEqual(['prefers concise answers'])
+    expect(runtimeDb.memories().map((memory) => memory.text)).toEqual(['prefere respostas objetivas'])
   })
 
   it('nao trata como memoria duplicada uma candidata abaixo do limiar de 86%', async () => {
@@ -92,7 +92,7 @@ describe('runtimeDatabase memory similarity guard', () => {
         memories: [
           {
             id: 1,
-            text: 'user likes airplanes',
+            text: 'gosto de avioes',
             feedback_score: 0,
             usage_count: 0,
             created_at: '2026-07-20',
@@ -111,8 +111,8 @@ describe('runtimeDatabase memory similarity guard', () => {
     await runtimeDb.sendUserMessage(chat!.id, 'Quero te contar uma preferencia minha.')
 
     expect(runtimeDb.memories().map((memory) => memory.text).sort()).toEqual([
-      'user likes airplanes',
-      'user likes airplanes a lot',
+      'gosto de avioes',
+      'gosto muito de avioes',
     ].sort())
 
     const updatedChat = runtimeDb.chats().find((entry) => entry.id === chat!.id)

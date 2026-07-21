@@ -130,6 +130,15 @@ const server = http.createServer(async (request, response) => {
       return
     }
 
+    if (method === 'POST' && url.pathname === '/api/memories/embedding-similarity') {
+      const body = await readBody(request)
+      sendJson(response, 200, await runtimeDb.inspectMemoryEmbeddingSimilarity(body.text ?? '', {
+        page: body.page,
+        pageSize: body.pageSize,
+      }))
+      return
+    }
+
     const memoryUpdateMatch = url.pathname.match(/^\/api\/memories\/(\d+)$/)
     if (method === 'PATCH' && memoryUpdateMatch) {
       const body = await readBody(request)

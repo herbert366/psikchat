@@ -18,7 +18,7 @@ try {
 
   await runtimeDb.sendUserMessage(chat.id, 'O nome do meu cachorro é billy.')
   const afterFirstTurn = runtimeDb.listState()
-  const createdMemory = afterFirstTurn.memories.find((memory) => memory.text.toLowerCase() === "i dog's name: billy")
+  const createdMemory = afterFirstTurn.memories.find((memory) => memory.text.toLowerCase() === 'nome do meu cachorro: billy')
   if (!createdMemory) {
     throw new Error(`A memoria canonica nao foi criada. Memorias recebidas: ${afterFirstTurn.memories.map((memory) => memory.text).join(' | ')}`)
   }

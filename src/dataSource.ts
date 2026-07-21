@@ -1,4 +1,4 @@
-import type { Chat, Memory, MemoryEvent, Message } from './appTypes'
+import type { Chat, Memory, MemoryEmbeddingSimilarityPage, MemoryEvent, Message } from './appTypes'
 
 export type AppSnapshot = {
   chats: Chat[]
@@ -16,6 +16,7 @@ export type AppDataSource = {
   sendUserMessage: (chatId: number, text: string) => Promise<SendMessageResult>
   sendUserMessageStream: (chatId: number, text: string, onEvent: (event: SendMessageStreamEvent) => void) => Promise<SendMessageResult>
   createMemory: (text: string, chatId?: number | null) => Promise<CreateMemoryResult>
+  inspectMemoryEmbeddingSimilarity: (text: string, page: number, pageSize: number) => Promise<MemoryEmbeddingSimilarityPage>
   updateMemory: (memoryId: number, text: string) => Promise<StateResult>
   deleteMemory: (memoryId: number) => Promise<StateResult>
   rateAssistantMessage: (chatId: number, messageId: string, rating: -1 | 1) => Promise<StateResult>
@@ -113,10 +114,18 @@ export function createApiDataSource(apiBaseUrl = API_BASE_URL): AppDataSource {
     sendUserMessageStream: (chatId, text, onEvent) => requestStream<SendMessageStreamEvent>(`${apiBaseUrl}/api/chats/${chatId}/messages/stream`, {
       method: 'POST',
       body: JSON.stringify({ text }),
-    }, onEvent).then(({ done: _done, ...result }) => result),
+    }, onEvent).then((event) => ({
+      userMessage: event.userMessage,
+      assistantMessage: event.assistantMessage,
+      state: event.state,
+    })),
     createMemory: (text, chatId) => requestFromApi<CreateMemoryResult>('/api/memories', {
       method: 'POST',
       body: JSON.stringify({ text, chatId }),
+    }),
+    inspectMemoryEmbeddingSimilarity: (text, page, pageSize) => requestFromApi<MemoryEmbeddingSimilarityPage>('/api/memories/embedding-similarity', {
+      method: 'POST',
+      body: JSON.stringify({ text, page, pageSize }),
     }),
     updateMemory: (memoryId, text) => requestFromApi<StateResult>(`/api/memories/${memoryId}`, {
       method: 'PATCH',
