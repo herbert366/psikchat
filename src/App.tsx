@@ -974,26 +974,28 @@ function App({ dataSource = appDataSource }: AppProps) {
               )}
             </div>
 
-            <form className="composer" onSubmit={sendMessage}>
-              <button className="create-memory" type="button" onClick={() => { setEditingMemoryId(null); setMemory(''); setIsMemoryOpen(true) }}>
-                Criar memoria
-              </button>
-              <input
-                ref={messageInputRef}
-                value={message}
-                onChange={(event) => setMessage(event.target.value)}
-                placeholder="Escreva sua mensagem..."
-                aria-label="Mensagem"
-                maxLength={APP_CONFIG.maxCaracteresMemoryContext}
-                disabled={!currentActiveChatId}
-              />
-              <button type="submit" disabled={!currentActiveChatId || !message.trim()}>{isSendingMessage ? 'Agendar' : 'Enviar'}</button>
-            </form>
-            {queuedMessagesForActiveChat.length > 0 && (
-              <p className="composer-queue-status">
-                {queuedMessagesForActiveChat.length} mensagem{queuedMessagesForActiveChat.length > 1 ? 'ens' : ''} aguardando envio.
-              </p>
-            )}
+            <div className="composer-area">
+              <form className="composer" onSubmit={sendMessage}>
+                <button className="create-memory" type="button" onClick={() => { setEditingMemoryId(null); setMemory(''); setIsMemoryOpen(true) }}>
+                  Criar memoria
+                </button>
+                <input
+                  ref={messageInputRef}
+                  value={message}
+                  onChange={(event) => setMessage(event.target.value)}
+                  placeholder="Escreva sua mensagem..."
+                  aria-label="Mensagem"
+                  maxLength={APP_CONFIG.maxCaracteresMemoryContext}
+                  disabled={!currentActiveChatId}
+                />
+                <button type="submit" disabled={!currentActiveChatId || !message.trim()}>{isSendingMessage ? 'Agendar' : 'Enviar'}</button>
+              </form>
+              {queuedMessagesForActiveChat.length > 0 && (
+                <p className="composer-queue-status">
+                  {queuedMessagesForActiveChat.length} mensagem{queuedMessagesForActiveChat.length > 1 ? 'ens' : ''} aguardando envio.
+                </p>
+              )}
+            </div>
 
           </>
         ) : (
