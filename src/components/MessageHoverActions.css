@@ -1,0 +1,39 @@
+.message-hover-actions {
+  position: relative;
+}
+
+.message-hover-actions-tools {
+  position: absolute;
+  right: 0;
+  bottom: 100%;
+  display: flex;
+  gap: 6px;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(3px);
+  transition: opacity .15s ease, transform .15s ease;
+}
+
+.message-hover-actions:hover .message-hover-actions-tools,
+.message-hover-actions:focus-within .message-hover-actions-tools {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateY(0);
+}
+
+.message-hover-actions-action {
+  padding: 6px 9px;
+  border: 0;
+  border-radius: 7px;
+  background: #1d1d1d;
+  color: #f4f4f4;
+  font: inherit;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.message-hover-actions-action:hover,
+.message-hover-actions-action:focus-visible {
+  background: #e87958;
+  outline: none;
+}

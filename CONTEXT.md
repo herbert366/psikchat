@@ -2,7 +2,7 @@
 
 ## Dominio e termos
 
-Este projeto e um mock visual enxuto de uma interface de chat com memoria manual.
+Este projeto e uma interface de chat com memoria manual persistida em SQLite por uma API local.
 
 - **Sidebar:** area persistente a esquerda para conversas. Deve existir em telas desktop.
 - **Chat:** area principal da conversa; mensagens do assistente ficam a esquerda e mensagens do usuario a direita.
@@ -11,9 +11,10 @@ Este projeto e um mock visual enxuto de uma interface de chat com memoria manual
 
 ## Fontes canonicas
 
-- `src/App.tsx`: estrutura, estado local e interacoes do mock.
+- `src/App.tsx`: estrutura, estado local e interacoes da interface.
 - `src/App.css`: layout, paleta e responsividade do chat.
 - `src/index.css`: reset global e fundamentos tipograficos.
+- `server/runtimeDatabase.mjs`: persistencia SQLite, busca de memorias e operacoes de chat.
 
 ## Invariantes de UX
 
@@ -21,7 +22,7 @@ Este projeto e um mock visual enxuto de uma interface de chat com memoria manual
 - O botao `Criar memoria` deve ficar junto ao input de mensagem, nunca na sidebar.
 - O modal de memoria deve ser centralizado em relacao a area do chat, nao a viewport inteira. A sidebar precisa continuar visivel e fora do overlay.
 - Respostas do assistente exibem controles de avaliacao positiva e negativa; mensagens do usuario nao.
-- O modal cria uma memoria manual e a adiciona a lista sem exigir backend.
+- O modal cria uma memoria manual e a adiciona a lista via API local com persistencia em SQLite.
 - Em telas pequenas, ocultar a sidebar e manter todos os controles acessiveis dentro do chat.
 - Icones devem ficar centralizados verticalmente em relacao ao texto usando um container compartilhado, preferencialmente com `display: flex` e `align-items: center`.
 - Controles relacionados, como titulo, chevron e icone de novo chat, devem permanecer no mesmo container com `gap` explicito e area clicavel consistente.
@@ -39,7 +40,7 @@ Este projeto e um mock visual enxuto de uma interface de chat com memoria manual
 
 ## Riscos e anti-patterns
 
-- Nao transformar o mock em um chat completo: nao ha persistencia, API, streaming ou gerenciamento de conversas nesta etapa.
+- Nao reintroduzir fallback em memoria ou seeds visuais no app; o fluxo padrao deve permanecer ligado ao SQLite.
 - Nao introduzir dependencias para icones, modal ou estado simples; React e CSS nativos sao suficientes.
 - Nao centralizar overlays com `position: fixed` no documento quando a intencao for um overlay contextual do chat.
 - Nao usar `position: absolute` para alinhar icones em relacao a textos; isso remove o icone do fluxo do container e causa desalinhamento responsivo.

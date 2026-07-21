@@ -1,77 +1,48 @@
-# React + TypeScript + Vite
+# psikchat
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+Interface de chat com memórias manuais na UI e backend local persistido em SQLite.
 
-Currently, two official plugins are available:
+## Stack
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+- Frontend: React + Vite
+- API local: Node HTTP nativo
+- Persistência: `node:sqlite`
+- Chat model: OpenRouter `openai/gpt-4.1-nano`
+- Embeddings: OpenRouter `openai/text-embedding-3-large`
 
-## React Compiler
+## Variáveis de ambiente
 
-The React Compiler is enabled on this template. See [this documentation](https://react.dev/learn/react-compiler) for more information.
+O projeto usa `.env` para o frontend e para a API local. Há um `.env.example` com o formato esperado.
 
-Note: This will impact Vite dev & build performances.
+## Deploy em nuvem
 
-## Expanding the ESLint configuration
+- Use Node.js `>=22.5.0`, pois a API depende de `node:sqlite`.
+- Monte um volume persistente e configure `APP_DB_PATH` dentro dele. O diretório local do processo não é adequado para plataformas serverless, pois pode ser efêmero ou somente leitura.
+- O backend atual não possui autenticação nem isolamento por usuário. Ele é adequado apenas para uma instância privada de um único usuário. Antes de expor o app para múltiplas pessoas, implemente autenticação e associe chats e memórias ao usuário autenticado.
+- Publique o frontend estático e a API como serviços separados, definindo `VITE_API_BASE_URL` com a URL pública da API.
 
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
+## Rodando
 
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
-
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
-
+```bash
+npm run dev
 ```
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+O comando inicia a API local e o frontend. Abra a URL mostrada pelo Vite.
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
+Para iniciar apenas a API, use `npm run dev:api`.
 
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+O frontend depende da API local para carregar e gravar chats e memórias. Não há fallback em memória no app.
 
+## Smoke test da memória
+
+Esse teste faz duas mensagens reais com o modelo: cria uma memória no primeiro turno e verifica se o segundo turno lembra dela.
+
+```bash
+npm run smoke:memory
+```
+
+## Testes
+
+```bash
+npm test
 ```
