@@ -28,10 +28,40 @@ function compactWhitespace(value) {
   return value.replace(/\s+/g, ' ').trim()
 }
 
+function looksLikeDeclarativeAnswer(value) {
+  const normalized = normalizeText(compactWhitespace(value))
+  if (!normalized) return false
+
+  return /^(o que|como) costuma (melhorar|ajudar|funcionar) e\b/.test(normalized)
+}
+
 function messageLooksLikeQuestion(value) {
   const normalized = compactWhitespace(value)
   if (!normalized) return false
-  return normalized.includes('?') || /^(o que|qual|quais|quem|como|quando|onde|por que|porque|sera|ser[aá]|devo|posso|voce|você)\b/i.test(normalized)
+  if (normalized.includes('?')) return true
+  if (clauseLooksLikeExplicitDeclaration(normalized) || looksLikeDeclarativeAnswer(normalized)) return false
+  return /^(o que|qual|quais|quem|como|quando|onde|por que|porque|sera|ser[aá]|devo|posso|voce|você)\b/i.test(normalized)
+}
+
+function clauseLooksLikeExplicitDeclaration(value) {
+  const normalized = normalizeText(compactWhitespace(value))
+  if (!normalized) return false
+
+  return (
+    /\b(meu|minha|meus|minhas)\b/.test(normalized)
+    && /\b(se chama|chama|e|sao|tenho|trabalho|moro|gosto|prefiro|uso|quero|preciso)\b/.test(normalized)
+  ) || /\beu\b/.test(normalized)
+    && /\b(tenho|sou|estou|trabalho|moro|gosto|prefiro|uso|quero|preciso)\b/.test(normalized)
+}
+
+function questionContainsDeclarativePrefix(value) {
+  const normalized = compactWhitespace(value)
+  if (!messageLooksLikeQuestion(normalized)) return false
+
+  const separatorMatch = normalized.match(/^(.*?)[,;:-]\s*[^,;:-?]+\??$/)
+  if (!separatorMatch) return false
+
+  return clauseLooksLikeExplicitDeclaration(separatorMatch[1] ?? '')
 }
 
 function loadSourceAppConfig() {
@@ -586,9 +616,29 @@ export function createRuntimeDatabase(options = {}) {
       .sort((first, second) => second.rankingScore - first.rankingScore)
   }
 
-  async function generateLlmMemoryCandidates(historyChat, existingMemories) {
-    const lastUserMessage = compactWhitespace(historyChat.lastUserMessage).slice(-config.maxCaracteresMemoryToCreateMemory)
-    if (!lastUserMessage || messageLooksLikeQuestion(lastUserMessage)) return { candidates: [], prompt: null }
+  async function findClosestMemoryScore(memories, sourceText) {
+    if (!memories.length || !compactWhitespace(sourceText)) return null
+
+    const queryEmbedding = await llmClient.embed(sourceText)
+    let bestScore = null
+    for (const memory of memories) {
+      const score = buildMemoryScore(memory, sourceText, queryEmbedding)
+      if (!bestScore || score.similarity > bestScore.similarity) {
+        bestScore = score
+      }
+    }
+
+    return bestScore
+  }
+
+  function formatClosestMemoryForPrompt(score) {
+    if (!score) return 'Memoria_mais_parecida_com_a_ultima_mensagem: nenhuma encontrada.'
+    return `Memoria_mais_parecida_com_a_ultima_mensagem: "${score.memory.text}" (${toPercent(score.similarity)}% similar; bloqueio em ${toPercent(config.similarityThresholdToCreate)}% ou mais).`
+  }
+
+  async function generateLlmMemoryCandidates(historyChat, existingMemories, closestMemoryScore = null) {
+    const recentChat = historyChat.chat_text.slice(-config.maxCaracteresMemoryToCreateMemory)
+    if (!recentChat) return { candidates: [], prompt: null }
 
     const messages = [
       {
@@ -598,73 +648,53 @@ export function createRuntimeDatabase(options = {}) {
       {
         role: 'user',
         content: [
-          'Ultima mensagem do usuario:',
-          lastUserMessage || '(vazia)',
-          '',
-          'Memorias ja existentes:',
-          existingMemories.join('\n') || '(nenhuma)',
-          '',
-          'Crie apenas memorias novas, realmente reutilizaveis e explicitamente declaradas pelo usuario.',
-          'Priorize fatos do usuario, preferencias, nomes, metas, projetos e restricoes.',
-          'Tambem salve instrucoes explicitas do usuario sobre como voce deve responder em situacoes recorrentes.',
-          'Uma pergunta nao declara um fato: nunca crie memoria a partir de perguntas, mesmo se elas contiverem "eu", "meu", "gosto", "prefiro" ou uma alternativa como "ou nao".',
-          'Nao responda, complete, corrija ou suponha a resposta de uma pergunta ao extrair memorias.',
-          'Se nao houver uma declaracao explicita e duradoura na mensagem, retorne []. Em caso de duvida, retorne [].',
-          'Nao infira metas permanentes, preferencias duradouras ou prioridades a partir de uma pergunta isolada, exercicio, teste, curiosidade ou pedido pontual.',
-          'Nao extrapole, nao resuma demais e nao transforme um exemplo casual em perfil do usuario.',
-          'Se o usuario descreveu uma regra condicional reutilizavel, preserve essa regra na memoria em vez de inventar uma abstracao mais ampla.',
-          `Cada memoria deve ter no maximo ${config.maxCaracteresMemory} caracteres.`,
-          'Formato obrigatorio: escreva cada memoria em portugues como "titulo semantico: valor concreto" ou, quando ficar mais natural, como uma frase curta em primeira pessoa.',
-          'Para fatos, preferencias, dificuldades, metas e instrucoes do proprio usuario, escreva em primeira pessoa quando fizer sentido, usando formulacoes como "eu", "meu" e "minha" em vez de "user", "the user" ou "usuario".',
-          'Nunca escreva memorias sobre o proprio usuario com "user", "the user" ou "usuario".',
-          'Cada memoria deve preservar o valor concreto do fato. Um titulo, rotulo ou categoria sem valor e invalido.',
-          'Exemplo: para "O nome do meu cachorro e Billy", retorne "nome do meu cachorro: Billy".',
-          'Exemplo: para "Tenho dificuldade de escolher as melhores ideias para executar", retorne "tenho dificuldade de escolher as melhores ideias para executar".',
-          'Exemplo: para "Quando eu falar de sentimentos e voce nao souber opinar, me faca uma pergunta no final", retorne "em temas emocionais, se nao souber opinar, faca uma pergunta no final".',
-          'Se precisar, use um texto um pouco maior para preservar o fato completo e util.',
-          'Ignore informacoes genericas, redundantes ou que so repetem a pergunta.',
-          'Retorne apenas um array JSON de strings. Exemplo: ["nome do meu cachorro: Billy", "prefiro exemplos curtos"]',
-        ].join('\n'),
-      },
-    ]
-    const response = await llmClient.generateText(messages, { temperature: 0 })
+          `
+ <Chat recente>
+${recentChat || '(vazio)'}
+</Chat recente>
 
-    return {
-      candidates: extractJsonArray(response),
-      prompt: messages.map((message) => `${message.role}:\n${message.content}`).join('\n\n'),
-    }
-  }
+ Ultima mensagem do usuario:
+ ${historyChat.lastUserMessage || '(vazia)'}
 
-  async function generateFallbackMemoryCandidates(historyChat, existingMemories) {
-    const lastUserMessage = compactWhitespace(historyChat.lastUserMessage).slice(-config.maxCaracteresMemoryToCreateMemory)
-    if (!lastUserMessage || messageLooksLikeQuestion(lastUserMessage)) return { candidates: [], prompt: null }
+ Memorias_ja_existentes: [${existingMemories.join(', ')}]
+ ${formatClosestMemoryForPrompt(closestMemoryScore)}
 
-    const messages = [
-      {
-        role: 'system',
-        content: 'Voce normaliza declaracoes explicitas do usuario em memorias curtas e reutilizaveis. Retorne apenas JSON valido.',
-      },
-      {
-        role: 'user',
-        content: [
-          'Modo fallback: a extracao principal nao encontrou memoria, mas a mensagem pode conter uma declaracao explicita simples.',
-          'Ultima mensagem do usuario:',
-          lastUserMessage,
-          '',
-          'Memorias ja existentes:',
-          existingMemories.join('\n') || '(nenhuma)',
-          '',
-          'Se a mensagem contiver um fato, preferencia, nome, restricao ou instrucao declarada explicitamente pelo usuario, converta isso em memoria reutilizavel.',
-          'Se nao houver declaracao explicita e duradoura, retorne [].',
-          'Nunca crie memoria a partir de perguntas, hipotese, exemplo, brincadeira, citacao ou pedido pontual.',
-          `Cada memoria deve ter no maximo ${config.maxCaracteresMemory} caracteres.`,
-          'Formato obrigatorio: escreva cada memoria em portugues como "titulo semantico: valor concreto" ou, quando ficar mais natural, como uma frase curta em primeira pessoa.',
-          'Para fatos, preferencias, dificuldades, metas e instrucoes do proprio usuario, escreva em primeira pessoa quando fizer sentido, usando formulacoes como "eu", "meu" e "minha" em vez de "user", "the user" ou "usuario".',
-          'Nunca escreva memorias sobre o proprio usuario com "user", "the user" ou "usuario".',
-          'Quando o usuario declara uma preferencia direta como "Eu gosto de praia", preserve a preferencia concreta numa memoria curta e reutilizavel.',
-          'Exemplo: para "Eu gosto de praia", retorne "gosto de praia".',
-          'Retorne apenas um array JSON de strings.',
-        ].join('\n'),
+  Extraia memorias apenas de declaracoes explicitas do usuario, com foco principal na ultima mensagem do usuario.
+  Se o restante do chat contiver perguntas, contexto do assistente ou texto exploratorio, nao deixe isso impedir uma memoria valida declarada na ultima mensagem.
+  Crie apenas memorias novas, realmente reutilizaveis e explicitamente declaradas pelo usuario.
+ Nunca repita nada que ja esteja em "Memorias_ja_existentes". Nunca crie memorias iguais as Memorias_ja_existentes, quase igual, parafraseada ou semanticamente equivalente a uma memoria existente, caso a conversa não tenha nenhuma memoria realmente nova e util não faça nada. retorne "[]".
+ Trate "Memorias_ja_existentes" como canonicas mesmo se estiverem em outro idioma.
+ Antes de propor cada memoria, compare o significado com cada item existente; se for traducao, reformulacao, sinonimo, generalizacao, especificacao do mesmo fato ou a mesma dificuldade escrita de outro jeito, descarte.
+ Se a nova frase apenas trocar ingles por portugues, ou mudar palavras como "pensar claramente" por "clareza mental", ainda e duplicata e deve ser descartada.
+ Exemplo negativo: se ja existir "i have difficulty thinking clearly at times", nao crie "tenho dificuldade de pensar claramente as vezes".
+  Use "Memoria_mais_parecida_com_a_ultima_mensagem" como pista anti-duplicata, nao como veto automatico.
+  Se a memoria mais parecida ainda estiver semanticamente distante da ultima mensagem do usuario, isso aumenta a chance de existir memoria nova.
+  Nao descarte uma memoria nova so porque ela fala da mesma area geral; descarte apenas se o valor concreto for substancialmente o mesmo.
+  Exemplo positivo: se ja existir "tenho dificuldade de escolher as melhores ideias para executar" e o usuario disser "O que costuma melhorar e eu matematicamente criar heuristicas para tomada de decisao", uma memoria nova valida e "costumo criar heuristicas matematicas para tomada de decisao".
+  Priorize fatos do usuario, preferencias, nomes, metas, projetos e restricoes.
+Tambem salve instrucoes explicitas do usuario sobre como voce deve responder em situacoes recorrentes.
+Uma pergunta nao declara um fato: nunca crie memoria a partir de perguntas, mesmo se elas contiverem "eu", "meu", "gosto", "prefiro" ou uma alternativa como "ou nao".
+ Nao transforme o assunto da pergunta em fato sobre o usuario. Perguntar sobre dificuldades, preferencias, metas, qualidades, defeitos ou identidade nao declara nenhuma dessas coisas.
+ Nao crie "meta-memorias" sobre a pessoa estar tentando descobrir algo sobre si mesma. Isso continua sendo inferencia a partir de pergunta e deve ser descartado.
+ Exemplo negativo: para "Oq eu tenho mais dificuldades?", nao crie "tenho dificuldades em identificar minhas principais dificuldades".
+ Exemplo negativo: para "Qual meu maior defeito?", nao crie "estou tentando entender meu maior defeito".
+Nao responda, complete, corrija ou suponha a resposta de uma pergunta ao extrair memorias.
+Se nao houver uma declaracao explicita e duradoura na mensagem, retorne []. Em caso de duvida, retorne [].
+Nao infira metas permanentes, preferencias duradouras ou prioridades a partir de uma pergunta isolada, exercicio, teste, curiosidade ou pedido pontual.
+Nao extrapole, nao resuma demais e nao transforme um exemplo casual em perfil do usuario.
+Se o usuario descreveu uma regra condicional reutilizavel, preserve essa regra na memoria em vez de inventar uma abstracao mais ampla.
+Cada memoria deve ter no maximo ${config.maxCaracteresMemory} caracteres.
+Formato obrigatorio: escreva cada memoria em portugues como "titulo semantico: valor concreto" ou, quando ficar mais natural, como uma frase curta em primeira pessoa.
+Para fatos, preferencias, dificuldades, metas e instrucoes do proprio usuario, escreva em primeira pessoa quando fizer sentido, usando formulacoes como "eu", "meu" e "minha" em vez de "user", "the user" ou "usuario".
+Nunca escreva memorias sobre o proprio usuario com "user", "the user" ou "usuario".
+Cada memoria deve preservar o valor concreto do fato. Um titulo, rotulo ou categoria sem valor e invalido.
+Exemplo: para "O nome do meu cachorro e Billy", retorne "nome do meu cachorro: Billy".
+Exemplo: para "Tenho dificuldade de escolher as melhores ideias para executar", retorne "tenho dificuldade de escolher as melhores ideias para executar".
+Exemplo: para "Quando eu falar de sentimentos e voce nao souber opinar, me faca uma pergunta no final", retorne "em temas emocionais, se nao souber opinar, faca uma pergunta no final".
+Se precisar, use um texto um pouco maior para preservar o fato completo e util.
+Ignore informacoes genericas, redundantes ou que so repetem a pergunta.
+Retorne apenas um array JSON de strings. Exemplo: ["nome do meu cachorro: Billy", "prefiro exemplos curtos"]
+`].join('\n'),
       },
     ]
     const response = await llmClient.generateText(messages, { temperature: 0 })
@@ -1046,23 +1076,25 @@ export function createRuntimeDatabase(options = {}) {
   }
 
   async function createNewMemories(historyChat, chatId = null) {
-    const lastUserMessage = compactWhitespace(historyChat.lastUserMessage).slice(-config.maxCaracteresMemoryToCreateMemory)
-    if (!lastUserMessage) {
-      return { created: [], events: [] }
+    const recentChat = historyChat.chat_text.slice(-config.maxCaracteresMemoryToCreateMemory)
+    if (!recentChat) {
+      return { created: [], events: [], prompt: null }
     }
 
     const relatedMemories = await embeddingsSearch({
-      chatText: lastUserMessage,
+      chatText: recentChat,
       maxMemories: config.maxMemoriesPerReply,
     })
 
     const existingMemoryTexts = relatedMemories.map((memory) => memory.text)
-    const primaryResult = await generateLlmMemoryCandidates(historyChat, existingMemoryTexts)
-    const fallbackResult = primaryResult.candidates.length === 0
-      ? await generateFallbackMemoryCandidates(historyChat, existingMemoryTexts)
-      : { candidates: [], prompt: null }
+    const closestMemoryScore = await findClosestMemoryScore(relatedMemories, historyChat.lastUserMessage || recentChat)
+    const primaryResult = await generateLlmMemoryCandidates(historyChat, existingMemoryTexts, closestMemoryScore)
 
-    const candidates = dedupeCandidates([...primaryResult.candidates, ...fallbackResult.candidates])
+    if (messageLooksLikeQuestion(historyChat.lastUserMessage) && !questionContainsDeclarativePrefix(historyChat.lastUserMessage)) {
+      return { created: [], events: [], prompt: primaryResult.prompt }
+    }
+
+    const candidates = dedupeCandidates(primaryResult.candidates)
 
     const created = []
     const events = []
@@ -1126,15 +1158,15 @@ export function createRuntimeDatabase(options = {}) {
       }))
     }
 
-    appendMemoryEventsToChat(chatId, events, fallbackResult.prompt ?? primaryResult.prompt)
-    return { created, events }
+    appendMemoryEventsToChat(chatId, events, primaryResult.prompt)
+    return { created, events, prompt: primaryResult.prompt }
   }
 
   function formatMemoriesForLlm(memories) {
     return memories.map((memory) => [
       `Memoria: ${memory.text}`,
-      `Historico de status: ${JSON.stringify(memory.statusHistory.slice(-10).map((item) => ({
-        status: item.status,
+      `Sinais internos recentes: ${JSON.stringify(memory.statusHistory.slice(-10).map((item) => ({
+        score: item.status === 'positive' ? 1 : -1,
         atDays: daysSince(item.at),
       })))} `,
     ].join('\n')).join('\n\n')
@@ -1145,10 +1177,11 @@ export function createRuntimeDatabase(options = {}) {
       {
         role: 'system',
         content: [
-          'Voce responde em portugues do Brasil.',
           'As memorias sao contexto interno: use esse contexto em silencio e responda como uma pessoa normal.',
           'Nao diga que esta lendo, consultando, recuperando ou lembrando de memorias, a menos que o usuario pergunte diretamente sobre isso.',
+          'Nao exponha campos internos, etiquetas tecnicas, notas de confirmacao, pontuacoes ou estruturas brutas do contexto na resposta.',
           'Evite formulacoes burocraticas como "voce mencionou", "pelas memorias", "com base no historico" ou equivalentes quando uma resposta direta e natural bastar.',
+          'Evite frases artificiais como "seu historico indica" ou "isso pode variar" quando isso vier apenas de contexto interno.',
           'Use as memorias como fonte de verdade para fatos pessoais, preferencias e contexto recorrente.',
           'Se a resposta estiver nas memorias, responda diretamente usando essa informacao.',
           'Considere o conjunto inteiro de memorias recuperadas antes de responder, mas cite apenas o que for relevante para o pedido atual.',
@@ -1167,6 +1200,16 @@ export function createRuntimeDatabase(options = {}) {
           'Antes de responder, compare o sujeito e a categoria do fato pedido com cada fato recuperado. Se houver um fato da mesma categoria para outro sujeito, responda naturalmente com duas afirmacoes: uma informa que o fato pedido para esse sujeito e desconhecido; a outra cita o fato relacionado conhecido, identificando seu sujeito. A resposta e invalida se faltar uma dessas afirmacoes.',
           'Nao ofereca ajuda adicional gratuita e nao mencione memorias.',
           'Se houver contexto suficiente nas memorias e no chat, responda direto sem fazer perguntas de acompanhamento.',
+          'Nao termine com perguntas vagas de permissao como "quer que eu te ajude com isso?" quando voce ja puder avancar.',
+          'Sempre que for natural encerrar a mensagem com uma pergunta, faca uma pergunta final boa, especifica e util para mover a conversa adiante.',
+          'Essa pergunta final deve pedir contexto concreto, prioridade, exemplo real, restricao, escolha pratica, gatilho, padrao recorrente ou situacao real que ajude na proxima resposta.',
+          'Quando voce identificar um problema, dificuldade ou objetivo do usuario, prefira perguntar sobre quando isso acontece, o que costuma disparar isso, como isso aparece na pratica ou qual contexto torna isso pior ou melhor.',
+          'Use a pergunta final para aprofundar o ponto principal da resposta, nao para abrir um assunto novo nem para apenas pedir permissao para continuar.',
+          'Evite encerrar com perguntas de menu, bifurcacao artificial ou preferencia generica como "voce quer explorar X ou Y?" quando voce puder fazer uma pergunta diagnostica mais concreta.',
+          'Em vez de oferecer opcoes abstratas de assunto, puxe um exemplo recente, um contexto real ou o momento exato em que o problema aparece.',
+          'Nunca use perguntas vazias de checagem ou permissao como "quer continuar?", "faz sentido?", "e isso mesmo?", "quer que eu continue?" ou equivalentes.',
+          'Se ainda faltar contexto, faca perguntas que coletem informacoes concretas para personalizar a proxima resposta ou a proxima recomendacao.',
+          'Se ja houver contexto suficiente para sugerir caminhos uteis, entregue as sugestoes diretamente em vez de pedir autorizacao para comecar.',
           'Se o usuario pedir opiniao, conselho, ajuda para decidir, interpretar ou resolver algo da propria vida e as memorias ou o chat nao trouxerem contexto suficiente para responder com seguranca, nao invente nem force uma resposta generica: faca 1 ou 2 perguntas curtas, especificas e realmente uteis para entender melhor antes de opinar.',
           'Se nenhuma memoria relevante tiver sido recuperada e o pedido envolver estilo de vida, rotina, trabalho, sentimentos, organizacao, metas, habitos, relacionamentos ou decisoes pessoais, nao responda com conselho generico.',
           'Nesses casos, deixe implícito de forma natural que ainda falta contexto e faca 1 ou 2 perguntas concretas sobre a vida real do usuario para personalizar a resposta.',
@@ -1260,7 +1303,7 @@ export function createRuntimeDatabase(options = {}) {
     const historyChat = buildHistoryChat(chat.messages)
     await feedbackMemories(historyChat.lastUserMessage, chatId)
     onProgress?.()
-    await createNewMemories(historyChat, chatId)
+    const memoryCreationResult = await createNewMemories(historyChat, chatId)
     onProgress?.()
 
     const memoryQuery = historyChat.chat_text.slice(-config.maxCaracteresMemoryContext)
@@ -1293,6 +1336,9 @@ export function createRuntimeDatabase(options = {}) {
         similarityPercent: toPercent(item.similarity),
       })),
       rating: 0,
+      ...(!memoryCreationResult.events.some((event) => event.status === 'created') && memoryCreationResult.prompt
+        ? { memoryPrompt: memoryCreationResult.prompt }
+        : {}),
     }
 
     writeChat({

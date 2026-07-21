@@ -130,6 +130,49 @@ describe('App', () => {
     expect(within(dialog).getByText(/O nome do meu cachorro e Billy/)).toBeInTheDocument()
   })
 
+  it('shows the memory-attempt prompt from an assistant reply when no memory was created', async () => {
+    await harness?.cleanup()
+    harness = await createSqliteAppHarness({
+      chats: [
+        {
+          id: 1,
+          title: 'Tentativa sem memoria',
+          created_at: '2026-07-20',
+          updated_at: '2026-07-20',
+          pinned: 0,
+          messages: [
+            { id: 'message-1', author: 'assistant', text: 'Como posso ajudar voce hoje?' },
+            { id: 'message-2', author: 'user', text: 'Fui ao mercado ontem' },
+            {
+              id: 'message-3',
+              author: 'assistant',
+              text: 'Resposta generica.',
+              memoryPrompt: 'system:\nVoce extrai memorias curtas e reutilizaveis de conversas.\n\nuser:\n<Chat recente>\nFui ao mercado ontem\n</Chat recente>',
+            },
+          ],
+        },
+      ],
+      memories: [],
+    })
+
+    const user = userEvent.setup()
+
+    await renderApp()
+
+    expect(await screen.findByText('Resposta generica.')).toBeInTheDocument()
+
+    const memoryButton = screen.getAllByRole('button', { name: 'Mostrar memorias usadas' }).at(-1)!
+    await user.click(memoryButton)
+
+    const memoryPanel = screen.getByLabelText('Memorias usadas nesta resposta')
+    const showPrompt = within(memoryPanel).getByRole('button', { name: 'Mostrar prompt da tentativa de memoria' })
+    await user.click(showPrompt)
+
+    const dialog = screen.getByRole('dialog', { name: 'Prompt da tentativa de memoria' })
+    expect(within(dialog).getByText(/Voce extrai memorias curtas e reutilizaveis/)).toBeInTheDocument()
+    expect(within(dialog).getByText(/Fui ao mercado ontem/)).toBeInTheDocument()
+  })
+
   it('shows rejection details only for the current extraction attempt', async () => {
     await harness?.cleanup()
     harness = await createSqliteAppHarness({

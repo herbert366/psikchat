@@ -55,6 +55,10 @@ function buildMemoryCandidates(prompt: string) {
     candidates.push('gosto de Ferrari')
   }
 
+  if (normalizedPrompt.includes('o que costuma melhorar e eu matematicamente criar heuristicas para tomada de decisao')) {
+    candidates.push('costumo criar heuristicas matematicas para tomada de decisao')
+  }
+
   if (
     normalizedPrompt.includes('quando eu falar de sentimentos')
     && normalizedPrompt.includes('me faca uma pergunta no final')

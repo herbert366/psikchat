@@ -524,6 +524,12 @@ function App({ dataSource = appDataSource }: AppProps) {
       })
   }
 
+  function copyLlmPrompt(text: string) {
+    void navigator.clipboard.writeText(text)
+      .then(() => setAppError(null))
+      .catch((error) => setAppError(resolveErrorMessage(error)))
+  }
+
   function sendMessage(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     const text = message.trim()
@@ -833,9 +839,23 @@ function App({ dataSource = appDataSource }: AppProps) {
                       }
                     }))
                   .filter((memoryItem): memoryItem is Memory & { similarityPercent: number | null } => Boolean(memoryItem))
+                const showMemoryAttemptPrompt = item.author === 'assistant' && Boolean(item.memoryPrompt)
 
                 return (
                   <article className={`message ${item.author}`} key={item.id}>
+                    {showMemoryAttemptPrompt && (
+                      <button
+                        className="message-memory-attempt-badge"
+                        type="button"
+                        aria-label="Mostrar prompt da tentativa de memoria"
+                        onClick={() => setLlmPromptDialog({
+                          title: 'Prompt da tentativa de memoria',
+                          text: item.memoryPrompt!,
+                        })}
+                      >
+                        tentativa de memoria
+                      </button>
+                    )}
                     {item.author === 'user' && (
                       <MessageHoverActions>
                         <MessageHoverActions.Tools>
@@ -1219,7 +1239,10 @@ function App({ dataSource = appDataSource }: AppProps) {
             >
               <header className="memory-prompt-header">
                 <h1 id="memory-prompt-title">{llmPromptDialog.title}</h1>
-                <button type="button" aria-label="Fechar prompt" onClick={() => setLlmPromptDialog(null)}>Fechar</button>
+                <div className="memory-prompt-actions">
+                  <button type="button" aria-label="Copiar prompt" onClick={() => copyLlmPrompt(llmPromptDialog.text)}>Copiar</button>
+                  <button type="button" aria-label="Fechar prompt" onClick={() => setLlmPromptDialog(null)}>Fechar</button>
+                </div>
               </header>
               <pre>{llmPromptDialog.text}</pre>
             </section>
