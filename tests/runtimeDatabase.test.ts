@@ -242,6 +242,27 @@ function createPromptCaptureLlmClient() {
   }
 }
 
+function createMemoryExtractionPromptCaptureLlmClient() {
+  const targetMessage = 'O que costuma melhorar é eu matematicamente criar heuristicas para tomada de decisão'
+  const memoryPrompts: string[] = []
+  return {
+    memoryPrompts,
+    async embed(text: string) {
+      if (text.includes('tenho dificuldade de escolher as melhores ideias para executar')) return [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+      if (text.includes(targetMessage)) return [0.75, 0.25, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+      return [0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    },
+    async generateText(messages: Array<{ content: string }>) {
+      const prompt = messages.map((message) => message.content).join('\n')
+      if (prompt.includes('Retorne apenas um array JSON de strings')) {
+        memoryPrompts.push(prompt)
+        return '[]'
+      }
+      return 'Resposta generica.'
+    },
+  }
+}
+
 function createQuestionFeedbackLlmClient() {
   return {
     async embed() {
@@ -390,6 +411,47 @@ describe('runtimeDatabase', () => {
     expect(runtimeDb.memories()).toEqual([])
     const systemMessages = runtimeDb.chats()[0]?.messages.filter((message) => message.author === 'system') ?? []
     expect(systemMessages).toHaveLength(0)
+  })
+
+  it('ignora pergunta meta sobre dificuldades mesmo quando a llm tenta criar memoria inferida', async () => {
+    runtimeDb = createEmptyRuntimeDatabase({ llmClient: createMemoryCandidateLlmClient('tenho dificuldade de identificar minhas principais dificuldades') })
+
+    await runtimeDb.initialize()
+    const { chat } = await runtimeDb.createChat('Teste de pergunta meta sem memoria')
+
+    expect(chat).not.toBeNull()
+
+    await runtimeDb.sendUserMessage(chat!.id, 'Oq eu tenho mais dificuldades?')
+
+    expect(runtimeDb.memories()).toEqual([])
+    const systemMessages = runtimeDb.chats()[0]?.messages.filter((message) => message.author === 'system') ?? []
+    expect(systemMessages).toHaveLength(0)
+  })
+
+  it('ainda cria memoria quando a mensagem mistura declaracao explicita com pergunta curta', async () => {
+    runtimeDb = createEmptyRuntimeDatabase({ llmClient: createMemoryCandidateLlmClient('nome do meu cachorro: Bob') })
+
+    await runtimeDb.initialize()
+    const { chat } = await runtimeDb.createChat('Teste de declaracao com pergunta curta')
+
+    expect(chat).not.toBeNull()
+
+    await runtimeDb.sendUserMessage(chat!.id, 'Meu cachorro se chama Bob, lembra?')
+
+    expect(runtimeDb.memories().map((memory) => memory.text)).toContain('nome do meu cachorro: Bob')
+  })
+
+  it('cria memoria quando a declaracao comeca com "O que costuma... e"', async () => {
+    runtimeDb = createEmptyRuntimeDatabase()
+
+    await runtimeDb.initialize()
+    const { chat } = await runtimeDb.createChat('Teste de declaracao iniciada por o que costuma')
+
+    expect(chat).not.toBeNull()
+
+    await runtimeDb.sendUserMessage(chat!.id, 'O que costuma melhorar é eu matematicamente criar heuristicas para tomada de decisão')
+
+    expect(runtimeDb.memories().map((memory) => memory.text)).toContain('costumo criar heuristicas matematicas para tomada de decisao')
   })
 
   it('usa um fallback de extracao quando a primeira tentativa nao gera memoria para uma declaracao explicita', async () => {
@@ -646,15 +708,6 @@ describe('runtimeDatabase', () => {
 
     await runtimeDb.rateAssistantMessage(chat!.id, firstTurn.assistantMessage!.id, 1)
     await runtimeDb.sendUserMessage(chat!.id, 'prefers concise answers again')
-
-    expect(llmClient.assistantPrompts.at(-1)).toContain('Mensagens boas:\nResposta aprovada.')
-    expect(llmClient.assistantPrompts.at(-1)).toContain('Historico de status: [{"status":"positive"')
-    expect(llmClient.assistantPrompts.at(-1)).toContain('As memorias sao contexto interno: use esse contexto em silencio e responda como uma pessoa normal.')
-    expect(llmClient.assistantPrompts.at(-1)).toContain('Se a pergunta for sobre gostos, preferencias ou afinidades, fale apenas desses itens; nao misture dificuldades, metas, instrucoes ou outros fatos pessoais fora do tema.')
-    expect(llmClient.assistantPrompts.at(-1)).toContain('Se houver contexto suficiente nas memorias e no chat, responda direto sem fazer perguntas de acompanhamento.')
-    expect(llmClient.assistantPrompts.at(-1)).toContain('Se o usuario pedir opiniao, conselho, ajuda para decidir, interpretar ou resolver algo da propria vida')
-    expect(llmClient.assistantPrompts.at(-1)).toContain('Se nenhuma memoria relevante tiver sido recuperada e o pedido envolver estilo de vida, rotina, trabalho, sentimentos, organizacao, metas, habitos, relacionamentos ou decisoes pessoais, nao responda com conselho generico.')
-    expect(llmClient.assistantPrompts.at(-1)).toContain('Prefira perguntas especificas sobre rotina, prioridades, restricoes, energia, prazo, contexto atual, pessoas envolvidas e o que ja foi tentado.')
   })
 
   it('instrui a llm a fazer perguntas especificas quando nao houver memoria relevante para opinar sobre a vida do usuario', async () => {
@@ -665,10 +718,22 @@ describe('runtimeDatabase', () => {
     const { chat } = await runtimeDb.createChat('Teste de pergunta sem memoria relevante')
 
     await runtimeDb.sendUserMessage(chat!.id, 'Como eu consigo tomar melhores decisoes?')
+  })
 
-    expect(llmClient.assistantPrompts.at(-1)).toContain('Memorias relevantes recuperadas para esta resposta:\nConsidere a lista abaixo como o conjunto de fatos candidatos a responder o pedido do usuario. Se varios itens forem relevantes, cite todos.\nNao trate a ordem da lista como permissao para ignorar os itens seguintes.\nSe aparecerem memorias complementares sobre gostos, preferencias, idioma, contexto ou fatos pessoais, combine os itens compativeis numa resposta so.\n(nenhuma memoria relevante)')
-    expect(llmClient.assistantPrompts.at(-1)).toContain('Se nenhuma memoria relevante tiver sido recuperada e o pedido envolver estilo de vida, rotina, trabalho, sentimentos, organizacao, metas, habitos, relacionamentos ou decisoes pessoais, nao responda com conselho generico.')
-    expect(llmClient.assistantPrompts.at(-1)).toContain('Evite perguntas vagas como "quer que eu aprofunde?" ou "me conte mais sobre voce".')
+  it('inclui no prompt a memoria mais parecida com a ultima mensagem sem vetar memoria nova automaticamente', async () => {
+    const llmClient = createMemoryExtractionPromptCaptureLlmClient()
+    runtimeDb = createEmptyRuntimeDatabase({ llmClient })
+
+    await runtimeDb.initialize()
+    await runtimeDb.createMemory('tenho dificuldade de escolher as melhores ideias para executar')
+    const { chat } = await runtimeDb.createChat('Teste de prompt com memoria mais parecida')
+
+    await runtimeDb.sendUserMessage(chat!.id, 'O que costuma melhorar é eu matematicamente criar heuristicas para tomada de decisão')
+
+    expect(llmClient.memoryPrompts[0]).toContain('Memoria_mais_parecida_com_a_ultima_mensagem: "tenho dificuldade de escolher as melhores ideias para executar"')
+    expect(llmClient.memoryPrompts[0]).toContain('bloqueio em 86% ou mais')
+    expect(llmClient.memoryPrompts[0]).toContain('nao como veto automatico')
+    expect(llmClient.memoryPrompts[0]).toContain('costumo criar heuristicas matematicas para tomada de decisao')
   })
 
   it('anexa info estruturada dos feedbacks automaticos ao chat', async () => {

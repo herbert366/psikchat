@@ -580,6 +580,24 @@ button {
   height: 18px;
 }
 
+.message-memory-attempt-badge {
+  position: absolute;
+  left: 4px;
+  bottom: calc(100% + 8px);
+  padding: 0;
+  background: transparent;
+  color: #94938f;
+  font-size: 12px;
+  text-align: left;
+}
+
+.message-memory-attempt-badge:hover,
+.message-memory-attempt-badge:focus-visible {
+  color: #f4f4f4;
+  text-decoration: underline;
+  outline: none;
+}
+
 .composer {
   display: flex;
   gap: 10px;
@@ -618,7 +636,8 @@ input:focus {
 }
 
 .modal-backdrop {
-  position: absolute;
+  position: fixed;
+  z-index: 30;
   inset: 0;
   display: grid;
   place-items: center;
@@ -687,6 +706,7 @@ input:focus {
   flex-direction: column;
   width: min(100%, 860px);
   max-height: min(680px, 100%);
+  margin: auto;
   padding: 20px;
   border-radius: 16px;
   background: #292929;
@@ -701,12 +721,19 @@ input:focus {
   margin-bottom: 16px;
 }
 
+.memory-prompt-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .memory-prompt-header h1 {
   margin: 0;
   color: #fff;
   font-size: 20px;
 }
 
+.memory-prompt-actions button,
 .memory-prompt-header button {
   flex: 0 0 auto;
   padding: 8px 10px;
@@ -716,6 +743,7 @@ input:focus {
   font-size: 13px;
 }
 
+.memory-prompt-actions button:hover,
 .memory-prompt-header button:hover {
   background: #e87958;
 }

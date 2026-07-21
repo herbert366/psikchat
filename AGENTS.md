@@ -56,6 +56,9 @@ Quando o usuario citar `pseudo-index.jsp`, siga esta ordem:
 - esquecer que o banco real e SQLite e que o app depende da API local.
 - adicionar matching hardcoded no motor de memoria com listas manuais de sinonimos, categorias, intents ou regexes especificas para cobrir perguntas como atalho de recuperacao;
 - mascarar falhas de embedding, ranking ou qualidade de memoria com heuristicas textuais ad hoc em vez de melhorar a representacao, os dados ou o fluxo real.
+- duplicar regras base de prompts relacionados, especialmente no motor de memoria, quando ambos precisam obedecer aos mesmos invariantes;
+- manter versoes paralelas de instrucoes compartilhadas entre prompt principal e fallback sem extracao de um bloco comum reutilizavel;
+- aceitar divida tecnica em prompts quando uma mudanca em uma regra compartilhada pode ser aplicada em um lugar e esquecida no outro, aumentando risco de divergencia comportamental.
 
 ## Preferencias de React
 
