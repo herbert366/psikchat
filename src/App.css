@@ -54,6 +54,7 @@ button {
 
 .side-nav {
   display: flex;
+  flex: 1;
   flex-direction: column;
   min-height: 0;
 }
@@ -245,6 +246,31 @@ button {
 .nav-item.active:hover {
   background: #e87958;
   color: #fff;
+}
+
+.sidebar-footer {
+  margin-top: auto;
+  padding-top: 14px;
+}
+
+.sidebar-danger-button {
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: rgba(255, 116, 107, 0.14);
+  color: #ff9f96;
+  font-size: 14px;
+  text-align: left;
+}
+
+.sidebar-danger-button:hover:not(:disabled) {
+  background: rgba(255, 116, 107, 0.22);
+  color: #ffd0cb;
+}
+
+.sidebar-danger-button:disabled {
+  cursor: not-allowed;
+  opacity: .7;
 }
 
 .create-memory {
@@ -585,6 +611,20 @@ input:focus {
   color: #c8c8c8;
   font-size: 12px;
   text-align: right;
+}
+
+.confirm-reset-copy {
+  text-align: left !important;
+  line-height: 1.5;
+}
+
+.danger-action {
+  background: #c84f41 !important;
+}
+
+.danger-action:disabled {
+  cursor: not-allowed;
+  opacity: .7;
 }
 
 .modal-actions {

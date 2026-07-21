@@ -28,14 +28,14 @@ function buildMemoryCandidates(prompt: string) {
   const candidates: string[] = []
 
   if (normalizedPrompt.includes('meu cachorro se chama bob')) {
-    candidates.push("user dog's name: Bob")
+    candidates.push("i dog's name: Bob")
   }
 
   if (normalizedPrompt.includes('o nome do meu cachorro e billy')) {
     candidates.push(
       prompt.includes('Formato obrigatorio: escreva cada memoria em ingles como "titulo semantico: valor concreto".')
-        ? "user dog's name: Billy"
-        : "user dog's name:",
+        ? "i dog's name: Billy"
+        : "i dog's name:",
     )
   }
 
@@ -52,14 +52,14 @@ function buildMemoryCandidates(prompt: string) {
   }
 
   if (normalizedPrompt.includes('gosto de ferrari')) {
-    candidates.push('user likes Ferrari')
+    candidates.push('i like Ferrari')
   }
 
   if (
     normalizedPrompt.includes('quando eu falar de sentimentos')
     && normalizedPrompt.includes('me faca uma pergunta no final')
   ) {
-    candidates.push('user preference for emotional topics: ask a question at end if unsure')
+    candidates.push('i prefer that for emotional topics you ask a question at end if unsure')
   }
 
   return JSON.stringify(candidates)
@@ -68,13 +68,13 @@ function buildMemoryCandidates(prompt: string) {
 function buildAssistantReply(prompt: string) {
   const normalizedPrompt = normalizeText(prompt)
 
-  if (normalizedPrompt.includes('qual o nome do meu cachorro?') && normalizedPrompt.includes("user dog's name: bob")) {
+  if (normalizedPrompt.includes('qual o nome do meu cachorro?') && normalizedPrompt.includes("i dog's name: bob")) {
     return 'O nome do seu cachorro e Bob.'
   }
 
   if (
     normalizedPrompt.includes('qual o nome do meu cachorro?')
-    && normalizedPrompt.includes("user dog's name: billy")
+    && normalizedPrompt.includes("i dog's name: billy")
   ) {
     return 'O nome do seu cachorro e Billy.'
   }

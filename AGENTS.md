@@ -54,3 +54,5 @@ Quando o usuario citar `pseudo-index.jsp`, siga esta ordem:
 - introduzir comportamento nao pedido so porque aparece no pseudo;
 - quebrar a UI atual para aproximar a tela de um pseudo focado em backend;
 - esquecer que o banco real e SQLite e que o app depende da API local.
+- adicionar matching hardcoded no motor de memoria com listas manuais de sinonimos, categorias, intents ou regexes especificas para cobrir perguntas como atalho de recuperacao;
+- mascarar falhas de embedding, ranking ou qualidade de memoria com heuristicas textuais ad hoc em vez de melhorar a representacao, os dados ou o fluxo real.

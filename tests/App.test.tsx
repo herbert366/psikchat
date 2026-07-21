@@ -83,8 +83,8 @@ describe('App', () => {
     await user.click(memoryButtons.at(-1)!)
 
     const memoryPanel = screen.getByLabelText('Memorias usadas nesta resposta')
-    expect(within(memoryPanel).getByText("user dog's name: Billy")).toBeInTheDocument()
-    expect(within(memoryPanel).queryByText("user dog's name:")).not.toBeInTheDocument()
+    expect(within(memoryPanel).getByText("i dog's name: Billy")).toBeInTheDocument()
+    expect(within(memoryPanel).queryByText("i dog's name:")).not.toBeInTheDocument()
   })
 
   it('shows rejection details only for the current extraction attempt', async () => {
@@ -117,8 +117,8 @@ describe('App', () => {
     await user.type(screen.getByRole('textbox', { name: 'Mensagem' }), 'Gosto de Ferrari')
     await user.click(screen.getByRole('button', { name: 'Enviar' }))
 
-    expect(await screen.findByText(/user likes Ferrari/i)).toBeInTheDocument()
-    expect(screen.queryByText(/memoria duplicada de "user dog's name: Bob"/i)).not.toBeInTheDocument()
+    expect(await screen.findByText(/i like Ferrari/i)).toBeInTheDocument()
+    expect(screen.queryByText(/memoria duplicada de "i dog's name: Bob"/i)).not.toBeInTheDocument()
   })
 
   it('ignores blank messages and supports negative feedback on assistant replies', async () => {

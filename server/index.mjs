@@ -20,6 +20,10 @@ function sendJson(response, statusCode, body) {
   response.end(JSON.stringify(body))
 }
 
+function sendNdjson(response, body) {
+  response.write(`${JSON.stringify(body)}\n`)
+}
+
 async function readBody(request) {
   const chunks = []
   for await (const chunk of request) {
@@ -61,6 +65,11 @@ const server = http.createServer(async (request, response) => {
       return
     }
 
+    if (method === 'POST' && url.pathname === '/api/reset') {
+      sendJson(response, 200, runtimeDb.resetApp())
+      return
+    }
+
     const chatTitleMatch = url.pathname.match(/^\/api\/chats\/(\d+)\/title$/)
     if (method === 'PATCH' && chatTitleMatch) {
       const body = await readBody(request)
@@ -84,6 +93,27 @@ const server = http.createServer(async (request, response) => {
     if (method === 'POST' && chatMessageMatch) {
       const body = await readBody(request)
       sendJson(response, 200, await runtimeDb.sendUserMessage(Number(chatMessageMatch[1]), body.text ?? ''))
+      return
+    }
+
+    const chatMessageStreamMatch = url.pathname.match(/^\/api\/chats\/(\d+)\/messages\/stream$/)
+    if (method === 'POST' && chatMessageStreamMatch) {
+      const body = await readBody(request)
+      response.writeHead(200, {
+        'Content-Type': 'application/x-ndjson; charset=utf-8',
+        'Cache-Control': 'no-cache, no-transform',
+        Connection: 'keep-alive',
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Headers': 'Content-Type',
+        'Access-Control-Allow-Methods': 'GET,POST,PATCH,DELETE,OPTIONS',
+      })
+
+      const result = await runtimeDb.sendUserMessageStream(Number(chatMessageStreamMatch[1]), body.text ?? '', (event) => {
+        sendNdjson(response, { ...event, done: false })
+      })
+
+      sendNdjson(response, { ...result, done: true })
+      response.end()
       return
     }
 

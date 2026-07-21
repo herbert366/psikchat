@@ -27,6 +27,12 @@ function compactWhitespace(value) {
   return value.replace(/\s+/g, ' ').trim()
 }
 
+function messageLooksLikeQuestion(value) {
+  const normalized = compactWhitespace(value)
+  if (!normalized) return false
+  return normalized.includes('?') || /^(o que|qual|quais|quem|como|quando|onde|por que|porque|sera|ser[aá]|devo|posso|voce|você)\b/i.test(normalized)
+}
+
 function loadSourceAppConfig() {
   try {
     const source = fs.readFileSync(APP_CONFIG_PATH, 'utf8')
@@ -413,6 +419,9 @@ export function createRuntimeDatabase(options = {}) {
     WHERE id = ?
   `)
   const deleteChatStatement = sqlite.prepare('DELETE FROM chats WHERE id = ?')
+  const clearMemoriesStatement = sqlite.prepare('DELETE FROM memories')
+  const clearChatsStatement = sqlite.prepare('DELETE FROM chats')
+  const clearMessageFeedbacksStatement = sqlite.prepare('DELETE FROM message_feedbacks')
 
   let nextMessageId = readNextMessageId()
 
@@ -569,6 +578,7 @@ export function createRuntimeDatabase(options = {}) {
   async function generateLlmMemoryCandidates(historyChat, existingMemories) {
     const lastUserMessage = compactWhitespace(historyChat.lastUserMessage).slice(-config.maxCaracteresMemoryToCreateMemory)
     if (!lastUserMessage) return []
+    if (messageLooksLikeQuestion(lastUserMessage)) return []
 
     const response = await llmClient.generateText([
       {
@@ -595,12 +605,47 @@ export function createRuntimeDatabase(options = {}) {
           'Se o usuario descreveu uma regra condicional reutilizavel, preserve essa regra na memoria em vez de inventar uma abstracao mais ampla.',
           `Cada memoria deve ter no maximo ${config.maxCaracteresMemory} caracteres.`,
           'Formato obrigatorio: escreva cada memoria em ingles como "titulo semantico: valor concreto".',
+          'Para fatos do proprio usuario, prefira escrever em primeira pessoa com "i" em vez de "user".',
           'Cada memoria deve preservar o valor concreto do fato. Um titulo, rotulo ou categoria sem valor e invalido.',
-          'Exemplo: para "O nome do meu cachorro e Billy", retorne "user dog\'s name: Billy".',
+          'Exemplo: para "O nome do meu cachorro e Billy", retorne "i dog\'s name: Billy".',
           'Exemplo: para "Quando eu falar de sentimentos e voce nao souber opinar, me faca uma pergunta no final", retorne uma memoria equivalente que preserve essa instrucao condicional.',
           'Se precisar, use um texto um pouco maior para preservar o fato completo e util.',
           'Ignore informacoes genericas, redundantes ou que so repetem a pergunta.',
           'Retorne apenas um array JSON de strings. Exemplo: ["Nome: Ana", "Nome do cachorro: Billy", "Prefere exemplos curtos"]',
+        ].join('\n'),
+      },
+    ], { temperature: 0 })
+
+    return extractJsonArray(response)
+  }
+
+  async function generateFallbackMemoryCandidates(historyChat, existingMemories) {
+    const lastUserMessage = compactWhitespace(historyChat.lastUserMessage).slice(-config.maxCaracteresMemoryToCreateMemory)
+    if (!lastUserMessage) return []
+    if (messageLooksLikeQuestion(lastUserMessage)) return []
+
+    const response = await llmClient.generateText([
+      {
+        role: 'system',
+        content: 'Voce normaliza declaracoes explicitas do usuario em memorias curtas e reutilizaveis. Retorne apenas JSON valido.',
+      },
+      {
+        role: 'user',
+        content: [
+          'Modo fallback: a extracao principal nao encontrou memoria, mas a mensagem pode conter uma declaracao explicita simples.',
+          'Ultima mensagem do usuario:',
+          lastUserMessage,
+          '',
+          'Memorias ja existentes:',
+          existingMemories.join('\n') || '(nenhuma)',
+          '',
+          'Se a mensagem contiver um fato, preferencia, nome, restricao ou instrucao declarada explicitamente pelo usuario, converta isso em memoria reutilizavel.',
+          'Se nao houver declaracao explicita e duradoura, retorne [].',
+          'Nunca crie memoria a partir de perguntas, hipotese, exemplo, brincadeira, citacao ou pedido pontual.',
+          `Cada memoria deve ter no maximo ${config.maxCaracteresMemory} caracteres.`,
+          'Formato obrigatorio: escreva cada memoria em ingles como "titulo semantico: valor concreto".',
+          'Quando o usuario declara uma preferencia direta como "Eu gosto de praia", preserve a preferencia concreta numa memoria curta e reutilizavel.',
+          'Retorne apenas um array JSON de strings.',
         ].join('\n'),
       },
     ], { temperature: 0 })
@@ -729,18 +774,29 @@ export function createRuntimeDatabase(options = {}) {
           '',
           'Para cada memoria, valide a relacao dela com a mensagem do usuario.',
           'Retorne somente JSON no formato [{"memory_id": 1, "score": 1}].',
-          'score: 1 se a mensagem confirma ou se relaciona diretamente com a memoria;',
+          'score: 1 somente se a mensagem declarar explicitamente o mesmo fato, preferencia, regra ou contexto da memoria;',
           'score: -1 se a mensagem contradiz a memoria;',
           'score: 0 se nao ha evidencia suficiente.',
+          'Perguntas, hipoteses, testes, exemplos, citacoes, exploracoes e pedidos de confirmacao nao confirmam memoria.',
+          'Se a mensagem apenas perguntar algo como "o que eu gosto?", "eu gosto de X?" ou "eu prefiro Y?", use score 0, nunca 1.',
+          'Nao complete lacunas, nao adivinhe a resposta implicita da pergunta e nao trate curiosidade como perfil do usuario.',
+          'Em caso de duvida, use score 0.',
         ].join('\n'),
       },
     ], { temperature: 0 })
 
     const memoryIds = new Set(memories.map((memory) => memory.id))
+    const messageIsQuestion = messageLooksLikeQuestion(lastUserMessage)
     const feedbacks = parseMemoryFeedbacks(response)
+      .map((feedback) => (messageIsQuestion && feedback.score > 0
+        ? { ...feedback, score: 0 }
+        : feedback))
       .filter((feedback) => memoryIds.has(feedback.memory_id))
+    const filteredFeedbacks = messageIsQuestion
+      ? feedbacks.filter((feedback) => feedback.score !== 0)
+      : feedbacks
 
-    const feedbackDetails = feedbacks
+    const feedbackDetails = filteredFeedbacks
       .map((feedback) => {
         const memory = getMemory(feedback.memory_id)
         if (!memory) return null
@@ -757,7 +813,7 @@ export function createRuntimeDatabase(options = {}) {
 
     appendMemoryFeedbacksToChat(chatId, feedbackDetails)
 
-    for (const feedback of feedbacks) {
+    for (const feedback of filteredFeedbacks) {
       if (feedback.score === 0) continue
       const memory = getMemory(feedback.memory_id)
       if (!memory) continue
@@ -769,7 +825,15 @@ export function createRuntimeDatabase(options = {}) {
       )
     }
 
-    return feedbacks
+    return filteredFeedbacks
+  }
+
+  function buildSendUserMessageResult(userMessage, assistantMessage) {
+    return {
+      userMessage,
+      assistantMessage,
+      state: listState(),
+    }
   }
 
   async function attemptManualMemoryCreate(text, chatId = null) {
@@ -925,9 +989,13 @@ export function createRuntimeDatabase(options = {}) {
       maxMemories: config.maxMemoriesPerReply,
     })
 
-    const candidates = dedupeCandidates(
-      await generateLlmMemoryCandidates(historyChat, relatedMemories.map((memory) => memory.text)),
-    )
+    const existingMemoryTexts = relatedMemories.map((memory) => memory.text)
+    const primaryCandidates = await generateLlmMemoryCandidates(historyChat, existingMemoryTexts)
+    const fallbackCandidates = primaryCandidates.length === 0
+      ? await generateFallbackMemoryCandidates(historyChat, existingMemoryTexts)
+      : []
+
+    const candidates = dedupeCandidates([...primaryCandidates, ...fallbackCandidates])
 
     const created = []
     const events = []
@@ -1013,6 +1081,15 @@ export function createRuntimeDatabase(options = {}) {
           'Voce responde em portugues do Brasil.',
           'Use as memorias como fonte de verdade para fatos pessoais, preferencias e contexto recorrente.',
           'Se a resposta estiver nas memorias, responda diretamente usando essa informacao.',
+          'Trate as memorias recuperadas como uma checklist de fatos relevantes para esta resposta.',
+          'Se houver varias memorias relevantes, cubra todas explicitamente; nao escolha apenas um exemplo representativo.',
+          'Nao resuma um conjunto de preferencias, gostos, fatos ou instrucoes em um item mais generico se isso apagar detalhes recuperados.',
+          'Quando o usuario pedir um resumo, lista ou panorama sobre preferencias, gostos, fatos pessoais ou contexto recorrente, agregue todos os itens relevantes das memorias recuperadas na propria resposta.',
+          'Antes de escrever a resposta final, converta mentalmente cada memoria recuperada em um fato canonico com sujeito, categoria e valor.',
+          'Se memorias diferentes apontarem para a mesma categoria de resposta, consolide sem perder nenhum valor concreto recuperado.',
+          'Nao pare ao encontrar o primeiro fato util; confira o conjunto inteiro de memorias recuperadas antes de responder.',
+          'Memorias podem estar escritas de forma imperfeita, redundante ou com rotulos indiretos. Extraia o fato util subjacente em vez de copiar cegamente o texto bruto da memoria.',
+          'Se uma memoria implicar um gosto, preferencia ou afinidade concreta do usuario, use esse conteudo de forma natural na resposta mesmo que o rotulo da memoria seja indireto.',
           'REGRA CRITICA: inclua todos os fatos recuperados que forem relevantes para a categoria da pergunta, mesmo que tenham sujeitos diferentes do sujeito perguntado.',
           'Interprete cada memoria como um fato limitado pelo seu sujeito, relacao e valor; preserve esses tres elementos.',
           'Nao atribua um fato de uma pessoa a outra nem infira que uma memoria sobre o usuario vale para familiares, parceiros ou outras pessoas.',
@@ -1032,7 +1109,10 @@ export function createRuntimeDatabase(options = {}) {
           'Mensagens ruins:',
           badMessages.join('\n') || '(nenhuma)',
           '',
-          'Memories:',
+          'Memorias relevantes recuperadas para esta resposta:',
+          'Considere a lista abaixo como o conjunto de fatos candidatos a responder o pedido do usuario. Se varios itens forem relevantes, cite todos.',
+          'Nao trate a ordem da lista como permissao para ignorar os itens seguintes.',
+          'Se aparecerem memorias complementares sobre gostos, preferencias, idioma, contexto ou fatos pessoais, combine os itens compativeis numa resposta so.',
           formatMemoriesForLlm(memories) || '(nenhuma memoria relevante)',
           '',
           'Chat recente:',
@@ -1096,13 +1176,15 @@ export function createRuntimeDatabase(options = {}) {
     }
   }
 
-  async function agentRespond(chatId) {
+  async function agentRespond(chatId, onProgress) {
     const chat = getChat(chatId)
     if (!chat) return null
 
     const historyChat = buildHistoryChat(chat.messages)
     await feedbackMemories(historyChat.lastUserMessage, chatId)
+    onProgress?.()
     await createNewMemories(historyChat, chatId)
+    onProgress?.()
 
     const memoryQuery = historyChat.chat_text.slice(-config.maxCaracteresMemoryContext)
     const memoriesForReply = await embeddingsSearchWithScores({
@@ -1142,6 +1224,8 @@ export function createRuntimeDatabase(options = {}) {
       messages: [...refreshedChat.messages, assistantMessage],
     })
 
+    onProgress?.(assistantMessage)
+
     return assistantMessage
   }
 
@@ -1180,9 +1264,13 @@ export function createRuntimeDatabase(options = {}) {
     memories: () => listMemories(),
     embeddingsSearch,
     async sendUserMessage(chatId, text) {
+      const result = await this.sendUserMessageStream(chatId, text)
+      return buildSendUserMessageResult(result.userMessage, result.assistantMessage)
+    },
+    async sendUserMessageStream(chatId, text, onProgress) {
       const chat = getChat(chatId)
       if (!chat) {
-        return { userMessage: null, assistantMessage: null, state: listState() }
+        return buildSendUserMessageResult(null, null)
       }
 
       const userMessage = {
@@ -1199,12 +1287,12 @@ export function createRuntimeDatabase(options = {}) {
         messages: [...chat.messages, userMessage],
       })
 
-      const assistantMessage = await agentRespond(chatId)
-      return {
-        userMessage,
-        assistantMessage,
-        state: listState(),
-      }
+      onProgress?.(buildSendUserMessageResult(userMessage, null))
+
+      const assistantMessage = await agentRespond(chatId, (nextAssistantMessage = null) => {
+        onProgress?.(buildSendUserMessageResult(userMessage, nextAssistantMessage))
+      })
+      return buildSendUserMessageResult(userMessage, assistantMessage)
     },
     async createChat(title = 'Novo chat') {
       const today = toIsoDay()
@@ -1229,6 +1317,20 @@ export function createRuntimeDatabase(options = {}) {
     deleteChat(chatId) {
       deleteChatStatement.run(chatId)
       return { state: listState() }
+    },
+    resetApp() {
+      clearMessageFeedbacksStatement.run()
+      clearMemoriesStatement.run()
+      clearChatsStatement.run()
+      sqlite.exec("DELETE FROM sqlite_sequence WHERE name IN ('memories', 'chats', 'message_feedbacks')")
+      nextMessageId = 1
+
+      const today = toIsoDay()
+      const result = insertChatStatement.run('Novo chat', today, today, '[]', 0)
+      return {
+        chat: getChat(Number(result.lastInsertRowid)),
+        state: listState(),
+      }
     },
     async createMemory(text, options = {}) {
       return attemptManualMemoryCreate(text, options.chatId ?? null)

@@ -302,6 +302,8 @@ function App({ dataSource = appDataSource }: AppProps) {
   const [appError, setAppError] = useState<string | null>(null)
   const [isBootstrapping, setIsBootstrapping] = useState(true)
   const [isSendingMessage, setIsSendingMessage] = useState(false)
+  const [isResettingApp, setIsResettingApp] = useState(false)
+  const [isResetDialogOpen, setIsResetDialogOpen] = useState(false)
   const [sendingChatId, setSendingChatId] = useState<number | null>(null)
   const [optimisticUserMessage, setOptimisticUserMessage] = useState<OptimisticUserMessage | null>(null)
   const [queuedMessages, setQueuedMessages] = useState<QueuedMessage[]>([])
@@ -457,7 +459,11 @@ function App({ dataSource = appDataSource }: AppProps) {
       text,
     })
 
-    void dataSource.sendUserMessage(chatId, text)
+    void dataSource.sendUserMessageStream(chatId, text, (event) => {
+      setOptimisticUserMessage(null)
+      applySnapshot(event.state, activeChatRef.current)
+      setAppError(null)
+    })
       .then((value) => {
         applySnapshot(value.state, activeChatRef.current)
         setAppError(null)
@@ -610,6 +616,33 @@ function App({ dataSource = appDataSource }: AppProps) {
     })
   }
 
+  function resetAppData() {
+    setIsResettingApp(true)
+    setAppError(null)
+
+    void dataSource.resetApp()
+      .then((value) => {
+        applySnapshot(value.state, value.chat?.id ?? null)
+        setMessage('')
+        setMemory('')
+        setMemoryMessageId(null)
+        setEditingMemoryId(null)
+        setIsMemoryOpen(false)
+        setEditingChatId(null)
+        setChatTitle('')
+        setOpenChatMenuId(null)
+        setIsChatsOpen(true)
+        setView('chat')
+        updateQueuedMessages(() => [])
+        setOptimisticUserMessage(null)
+        setSendingChatId(null)
+        setAppError(null)
+        setIsResetDialogOpen(false)
+      })
+      .catch((error) => setAppError(resolveErrorMessage(error)))
+      .finally(() => setIsResettingApp(false))
+  }
+
   return (
     <main className="chat-shell">
       <aside className="sidebar" aria-label="Conversas">
@@ -669,6 +702,16 @@ function App({ dataSource = appDataSource }: AppProps) {
           >
             Memorias
           </button>
+          <div className="sidebar-footer">
+            <button
+              className="sidebar-danger-button"
+              type="button"
+              onClick={() => setIsResetDialogOpen(true)}
+              disabled={isResettingApp}
+            >
+              {isResettingApp ? 'Apagando save...' : 'Apagar save'}
+            </button>
+          </div>
         </nav>
         {/* <button className="new-chat" type="button" aria-label="Novo chat" onClick={startNewChat}>
           <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
@@ -1009,6 +1052,19 @@ function App({ dataSource = appDataSource }: AppProps) {
               <div className="modal-actions">
                 <button type="button" onClick={() => { setEditingChatId(null); setChatTitle('') }}>Cancelar</button>
                 <button type="submit" disabled={!chatTitle.trim()}>Renomear</button>
+              </div>
+            </form>
+          </div>
+        )}
+
+        {isResetDialogOpen && (
+          <div className="modal-backdrop" role="presentation" onMouseDown={() => { if (!isResettingApp) setIsResetDialogOpen(false) }}>
+            <form className="memory-modal confirm-reset-modal" onSubmit={(event) => { event.preventDefault(); resetAppData() }} onMouseDown={(event) => event.stopPropagation()}>
+              <h1>Apagar todo o save?</h1>
+              <p className="confirm-reset-copy">Isso vai limpar conversas, memorias e feedbacks do SQLite e recriar um chat vazio.</p>
+              <div className="modal-actions">
+                <button type="button" onClick={() => setIsResetDialogOpen(false)} disabled={isResettingApp}>Cancelar</button>
+                <button className="danger-action" type="submit" disabled={isResettingApp}>{isResettingApp ? 'Apagando...' : 'Apagar tudo'}</button>
               </div>
             </form>
           </div>
