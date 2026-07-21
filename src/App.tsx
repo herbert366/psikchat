@@ -207,6 +207,17 @@ function formatMemoryAge(createdAt: string) {
   return `criada ha ${ageInDays} ${ageInDays === 1 ? 'dia' : 'dias'}`
 }
 
+function formatChatCreatedTime(createdAt: string) {
+  const date = /^\d{4}-\d{2}-\d{2}$/.test(createdAt)
+    ? new Date(`${createdAt}T00:00:00`)
+    : new Date(createdAt)
+  if (Number.isNaN(date.getTime())) return ''
+  return new Intl.DateTimeFormat('pt-BR', {
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(date)
+}
+
 function tokenizeText(value: string) {
   return normalizeSearchText(value)
     .replace(/[^a-z0-9\s]/g, ' ')
@@ -811,6 +822,11 @@ function App({ dataSource = appDataSource }: AppProps) {
         {view === 'chat' ? (
           <>
             <div className="messages">
+              {activeChatRecord && (
+                <time className="chat-created-time" dateTime={activeChatRecord.created_at}>
+                  {formatChatCreatedTime(activeChatRecord.created_at)}
+                </time>
+              )}
               {isBootstrapping && orderedChats.length === 0 && (
                 <p className="chat-status">Carregando conversas...</p>
               )}
@@ -974,26 +990,28 @@ function App({ dataSource = appDataSource }: AppProps) {
               )}
             </div>
 
-            <form className="composer" onSubmit={sendMessage}>
-              <button className="create-memory" type="button" onClick={() => { setEditingMemoryId(null); setMemory(''); setIsMemoryOpen(true) }}>
-                Criar memoria
-              </button>
-              <input
-                ref={messageInputRef}
-                value={message}
-                onChange={(event) => setMessage(event.target.value)}
-                placeholder="Escreva sua mensagem..."
-                aria-label="Mensagem"
-                maxLength={APP_CONFIG.maxCaracteresMemoryContext}
-                disabled={!currentActiveChatId}
-              />
-              <button type="submit" disabled={!currentActiveChatId || !message.trim()}>{isSendingMessage ? 'Agendar' : 'Enviar'}</button>
-            </form>
-            {queuedMessagesForActiveChat.length > 0 && (
-              <p className="composer-queue-status">
-                {queuedMessagesForActiveChat.length} mensagem{queuedMessagesForActiveChat.length > 1 ? 'ens' : ''} aguardando envio.
-              </p>
-            )}
+            <div className="composer-area">
+              <form className="composer" onSubmit={sendMessage}>
+                <button className="create-memory" type="button" onClick={() => { setEditingMemoryId(null); setMemory(''); setIsMemoryOpen(true) }}>
+                  Criar memoria
+                </button>
+                <input
+                  ref={messageInputRef}
+                  value={message}
+                  onChange={(event) => setMessage(event.target.value)}
+                  placeholder="Escreva sua mensagem..."
+                  aria-label="Mensagem"
+                  maxLength={APP_CONFIG.maxCaracteresMemoryContext}
+                  disabled={!currentActiveChatId}
+                />
+                <button type="submit" disabled={!currentActiveChatId || !message.trim()}>{isSendingMessage ? 'Agendar' : 'Enviar'}</button>
+              </form>
+              {queuedMessagesForActiveChat.length > 0 && (
+                <p className="composer-queue-status">
+                  {queuedMessagesForActiveChat.length} mensagem{queuedMessagesForActiveChat.length > 1 ? 'ens' : ''} aguardando envio.
+                </p>
+              )}
+            </div>
 
           </>
         ) : (

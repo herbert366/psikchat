@@ -1,4 +1,5 @@
 .chat-shell {
+  height: 100svh;
   min-height: 100svh;
   display: grid;
   grid-template-columns: 260px minmax(0, 1fr);
@@ -282,17 +283,40 @@ button {
 .chat {
   position: relative;
   min-width: 0;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   padding: 34px clamp(20px, 7vw, 110px) 20px;
+  overflow: hidden;
 }
 
 .messages {
-  flex: 1;
+  flex: 1 1 auto;
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 18px;
+  min-height: 0;
+  width: min(100%, 960px);
+  align-self: center;
+  padding-top: 20px;
   overflow-y: auto;
+  scrollbar-color: #080808 #080808;
+  scrollbar-width: thin;
+}
+
+.messages::-webkit-scrollbar {
+  width: 10px;
+}
+
+.messages::-webkit-scrollbar-track,
+.messages::-webkit-scrollbar-thumb {
+  background: #080808;
+}
+
+.chat-created-time {
+  align-self: center;
+  color: #94938f;
+  font-size: 13px;
 }
 
 .chat-status {
@@ -311,10 +335,10 @@ button {
 .message {
   position: relative;
   width: fit-content;
-  max-width: min(80%, 620px);
+  max-width: 100%;
   padding: 16px;
   border-radius: 15px;
-  background: #292929;
+  background: #202020;
   text-align: left;
 }
 
@@ -602,6 +626,10 @@ button {
   display: flex;
   gap: 10px;
   margin-top: 20px;
+}
+
+.composer-area {
+  flex: 0 0 auto;
 }
 
 .composer input,

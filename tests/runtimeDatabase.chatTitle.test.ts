@@ -54,4 +54,13 @@ describe('runtimeDatabase chat title', () => {
     await runtimeDb.sendUserMessage(chat!.id, 'Segunda mensagem')
     expect(runtimeDb.chats().find((item) => item.id === chat!.id)?.title).toBe('Meu titulo definitivo')
   })
+
+  it('stores the creation time of new chats as a full ISO timestamp', async () => {
+    runtimeDb = createEmptyRuntimeDatabase()
+
+    await runtimeDb.initialize()
+    const { chat } = await runtimeDb.createChat('Com horario')
+
+    expect(chat?.created_at).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/)
+  })
 })
