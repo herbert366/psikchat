@@ -1420,8 +1420,8 @@ Retorne apenas um array JSON de strings. Exemplo: ["nome do meu cachorro: Billy"
       return buildSendUserMessageResult(userMessage, assistantMessage)
     },
     async createChat(title = DEFAULT_CHAT_TITLE) {
-      const today = toIsoDay()
-      const result = insertChatStatement.run(title, today, today, '[]', 0)
+      const createdAt = now()
+      const result = insertChatStatement.run(title, createdAt, toIsoDay(), '[]', 0)
       return {
         chat: getChat(Number(result.lastInsertRowid)),
         state: listState(),
@@ -1450,8 +1450,8 @@ Retorne apenas um array JSON de strings. Exemplo: ["nome do meu cachorro: Billy"
       sqlite.exec("DELETE FROM sqlite_sequence WHERE name IN ('memories', 'chats', 'message_feedbacks')")
       nextMessageId = 1
 
-      const today = toIsoDay()
-      const result = insertChatStatement.run(DEFAULT_CHAT_TITLE, today, today, '[]', 0)
+      const createdAt = now()
+      const result = insertChatStatement.run(DEFAULT_CHAT_TITLE, createdAt, toIsoDay(), '[]', 0)
       return {
         chat: getChat(Number(result.lastInsertRowid)),
         state: listState(),

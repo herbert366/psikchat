@@ -294,10 +294,11 @@ button {
   flex: 1 1 auto;
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 18px;
   min-height: 0;
-  width: 100%;
-  align-self: stretch;
+  width: min(100%, 960px);
+  align-self: center;
+  padding-top: 20px;
   overflow-y: auto;
   scrollbar-color: #080808 #080808;
   scrollbar-width: thin;
@@ -310,6 +311,12 @@ button {
 .messages::-webkit-scrollbar-track,
 .messages::-webkit-scrollbar-thumb {
   background: #080808;
+}
+
+.chat-created-time {
+  align-self: center;
+  color: #94938f;
+  font-size: 13px;
 }
 
 .chat-status {
@@ -328,10 +335,10 @@ button {
 .message {
   position: relative;
   width: fit-content;
-  max-width: min(80%, 620px);
+  max-width: 100%;
   padding: 16px;
   border-radius: 15px;
-  background: #292929;
+  background: #202020;
   text-align: left;
 }
 
