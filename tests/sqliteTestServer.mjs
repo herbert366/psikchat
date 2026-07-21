@@ -127,6 +127,23 @@ function createTestLlmClient() {
         return buildMemoryCandidates(prompt)
       }
 
+      if (prompt.includes('Para cada memoria, valide a relacao dela com a mensagem do usuario.')) {
+        const lines = prompt.split('\n')
+        const userMessageLabelIndex = lines.findIndex((line) => line.trim() === 'Mensagem do usuario:')
+        const userMessage = normalizeText(userMessageLabelIndex >= 0 ? (lines[userMessageLabelIndex + 1] ?? '') : '')
+        const memoryLines = lines.filter((line) => /^\d+:\s+/.test(line))
+        const feedbacks = memoryLines.map((line) => {
+          const match = line.match(/^(\d+):\s+(.+)$/)
+          if (!match) return null
+          const memoryId = Number(match[1])
+          const memoryText = normalizeText(match[2])
+          const score = userMessage && memoryText && (userMessage.includes(memoryText) || memoryText.includes(userMessage)) ? 1 : 0
+          return { memory_id: memoryId, score }
+        }).filter(Boolean)
+
+        return JSON.stringify(feedbacks)
+      }
+
       return buildAssistantReply(prompt)
     },
   }
@@ -223,7 +240,7 @@ const server = http.createServer(async (request, response) => {
     const chatRatingMatch = url.pathname.match(/^\/api\/chats\/(\d+)\/messages\/([^/]+)\/rating$/)
     if (method === 'POST' && chatRatingMatch) {
       const body = await readBody(request)
-      sendJson(response, 200, runtimeDb.rateAssistantMessage(Number(chatRatingMatch[1]), chatRatingMatch[2], body.rating ?? 0))
+      sendJson(response, 200, await runtimeDb.rateAssistantMessage(Number(chatRatingMatch[1]), chatRatingMatch[2], body.rating ?? 0))
       return
     }
 

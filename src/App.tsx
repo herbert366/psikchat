@@ -4,7 +4,7 @@ import './App.css'
 import { APP_CONFIG } from './config'
 import { appDataSource } from './dataSource'
 import type { AppDataSource, AppSnapshot, StateResult } from './dataSource'
-import type { Chat, Memory, MemoryEvent, Message } from './appTypes'
+import type { Chat, Memory, MemoryEvent, MemoryFeedback, Message } from './appTypes'
 
 type View = 'chat' | 'memories'
 type MemorySort = 'updated-desc' | 'updated-asc' | 'created-desc' | 'created-asc' | 'usage-desc' | 'usage-asc' | 'feedback-desc' | 'feedback-asc'
@@ -45,6 +45,18 @@ function renderMemoryEventDebug(memoryEvent: MemoryEvent) {
   }
 }
 
+function renderMemoryFeedbackDebug(memoryFeedback: MemoryFeedback) {
+  if (memoryFeedback.status === 'positive') {
+    return <p><span className="memory-event-emphasis success">confirmou:</span> "{memoryFeedback.memoryText}"</p>
+  }
+
+  if (memoryFeedback.status === 'negative') {
+    return <p><span className="memory-event-emphasis danger">contradisse:</span> "{memoryFeedback.memoryText}"</p>
+  }
+
+  return <p><span className="memory-event-emphasis">sem evidencia:</span> "{memoryFeedback.memoryText}"</p>
+}
+
 function resolveMemoryEventTitle(memoryEvents: MemoryEvent[]) {
   const createdCount = memoryEvents.filter((event) => event.status === 'created').length
   const rejectedCount = memoryEvents.length - createdCount
@@ -52,6 +64,26 @@ function resolveMemoryEventTitle(memoryEvents: MemoryEvent[]) {
   if (createdCount > 1) return 'Memorias atualizadas'
   if (createdCount === 1) return 'Memoria atualizada'
   return rejectedCount > 1 ? 'Memorias rejeitadas' : 'Memoria rejeitada'
+}
+
+function parseMemoryFeedbacksFromSystemText(text: string): MemoryFeedback[] {
+  return text
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map<MemoryFeedback | null>((line) => {
+      const positiveMatch = line.match(/^Feedback positivo: memoria (\d+) confirmada por "(.+)"\.$/)
+      if (positiveMatch) return { memoryId: Number(positiveMatch[1]), memoryText: positiveMatch[2]!, score: 1, status: 'positive', detail: line }
+
+      const negativeMatch = line.match(/^Feedback negativo: memoria (\d+) contradita por "(.+)"\.$/)
+      if (negativeMatch) return { memoryId: Number(negativeMatch[1]), memoryText: negativeMatch[2]!, score: -1, status: 'negative', detail: line }
+
+      const neutralMatch = line.match(/^Feedback neutro: memoria (\d+) sem evidencia suficiente para "(.+)"\.$/)
+      if (neutralMatch) return { memoryId: Number(neutralMatch[1]), memoryText: neutralMatch[2]!, score: 0, status: 'neutral', detail: line }
+
+      return null
+    })
+    .filter((feedback): feedback is MemoryFeedback => Boolean(feedback))
 }
 
 function parseMemoryEventsFromSystemText(text: string): MemoryEvent[] {
@@ -83,6 +115,7 @@ function parseMemoryEventsFromSystemText(text: string): MemoryEvent[] {
 
 function renderMessageBody(item: Message) {
   const memoryEvents = item.memoryEvents ?? (item.memoryEvent ? [item.memoryEvent] : parseMemoryEventsFromSystemText(item.text))
+  const memoryFeedbacks = item.memoryFeedbacks ?? parseMemoryFeedbacksFromSystemText(item.text)
   if (item.author === 'system' && memoryEvents.length > 0) {
     return (
       <div className="memory-event-card">
@@ -99,6 +132,22 @@ function renderMessageBody(item: Message) {
     )
   }
 
+  if (item.author === 'system' && memoryFeedbacks.length > 0) {
+    return (
+      <div className="memory-event-card">
+        <div className="memory-event-header">
+          <BookIcon />
+          <strong>Feedbacks</strong>
+        </div>
+        {memoryFeedbacks.map((memoryFeedback, index) => (
+          <div key={`${memoryFeedback.memoryId}-${memoryFeedback.score}-${index}`}>
+            {renderMemoryFeedbackDebug(memoryFeedback)}
+          </div>
+        ))}
+      </div>
+    )
+  }
+
   return <p>{item.text}</p>
 }
 
@@ -108,6 +157,14 @@ function normalizeSearchText(value: string) {
 
 function resolveErrorMessage(error: unknown) {
   return error instanceof Error ? error.message : 'Algo falhou ao sincronizar os dados.'
+}
+
+function formatMemoryAge(createdAt: string) {
+  const createdDate = new Date(`${createdAt}T00:00:00`)
+  const ageInDays = Math.max(0, Math.floor((Date.now() - createdDate.getTime()) / (1000 * 60 * 60 * 24)))
+
+  if (ageInDays === 0) return 'criada hoje'
+  return `criada ha ${ageInDays} ${ageInDays === 1 ? 'dia' : 'dias'}`
 }
 
 function tokenizeText(value: string) {
@@ -715,9 +772,10 @@ function App({ dataSource = appDataSource }: AppProps) {
                                  <li className="message-memory-item" key={memoryItem.id}>
                                     <span className="message-memory-content">
                                       <span className="message-memory-text">{memoryItem.text}</span>
-                                      {memoryItem.similarityPercent !== null && (
-                                        <span className="message-memory-similarity">{memoryItem.similarityPercent}% similar a query</span>
-                                      )}
+                                       <span className="message-memory-similarity">
+                                         {memoryItem.similarityPercent !== null && `${memoryItem.similarityPercent}% similar a query - `}
+                                         {formatMemoryAge(memoryItem.created_at)}
+                                       </span>
                                     </span>
                                     <span className="message-memory-actions">
                                       <button type="button" aria-label="Apagar memoria" onClick={() => deleteMemory(memoryItem.id)}>

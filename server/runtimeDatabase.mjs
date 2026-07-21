@@ -91,7 +91,7 @@ function cosineSimilarity(first = [], second = []) {
   let dot = 0
   let firstMagnitude = 0
   let secondMagnitude = 0
-  for (let index = 0; index < first.length; index += 1) {
+  for (let index = 0;index < first.length;index += 1) {
     dot += first[index] * second[index]
     firstMagnitude += first[index] ** 2
     secondMagnitude += second[index] ** 2
@@ -109,6 +109,30 @@ function daysSince(date) {
   const parsed = new Date(date)
   const diff = Date.now() - parsed.getTime()
   return Math.max(0, Math.floor(diff / (1000 * 60 * 60 * 24)))
+}
+
+function now() {
+  return new Date().toISOString()
+}
+
+function parseStatusHistory(statusHistoryJson) {
+  try {
+    const parsed = JSON.parse(statusHistoryJson)
+    if (!Array.isArray(parsed)) return []
+
+    return parsed.filter((item) => (
+      item
+      && (item.status === 'positive' || item.status === 'negative')
+      && typeof item.at === 'string'
+    ))
+  }
+  catch {
+    return []
+  }
+}
+
+function serializeStatusHistory(statusHistory) {
+  return JSON.stringify(statusHistory)
 }
 
 function serializeHistory(messages) {
@@ -212,6 +236,12 @@ function buildMemoryEvent(sourceText, partial = {}) {
 
 function buildDuplicateMemoryDetail(attemptedText, conflictingMemoryText) {
   return `Memoria rejeitada: tentou criar "${attemptedText}", mas ela duplica "${conflictingMemoryText}".`
+}
+
+function buildMemoryFeedbackDetail(memory, score) {
+  if (score > 0) return `Feedback positivo: memoria ${memory.id} confirmada por "${memory.text}".`
+  if (score < 0) return `Feedback negativo: memoria ${memory.id} contradita por "${memory.text}".`
+  return `Feedback neutro: memoria ${memory.id} sem evidencia suficiente para "${memory.text}".`
 }
 
 function buildSimilarityDiagnostics(score, threshold) {
@@ -322,7 +352,8 @@ export function createRuntimeDatabase(options = {}) {
       updated_at DATETIME NOT NULL,
       feedback_score REAL NOT NULL DEFAULT 0,
       usage_count INTEGER NOT NULL DEFAULT 0,
-      embedding BLOB NOT NULL
+      embedding BLOB NOT NULL,
+      status_history_json TEXT NOT NULL DEFAULT '[]'
     );
     CREATE TABLE IF NOT EXISTS chats (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -332,15 +363,29 @@ export function createRuntimeDatabase(options = {}) {
       history_chat_json TEXT NOT NULL,
       pinned INTEGER NOT NULL DEFAULT 0
     );
+    CREATE TABLE IF NOT EXISTS message_feedbacks (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      chat_id INTEGER NOT NULL,
+      message_id TEXT NOT NULL,
+      type TEXT NOT NULL,
+      content TEXT NOT NULL,
+      created_at DATETIME NOT NULL,
+      embedding BLOB NOT NULL
+    );
   `)
+
+  const memoryColumns = sqlite.prepare('PRAGMA table_info(memories)').all()
+  if (!memoryColumns.some((column) => column.name === 'status_history_json')) {
+    sqlite.exec("ALTER TABLE memories ADD COLUMN status_history_json TEXT NOT NULL DEFAULT '[]'")
+  }
 
   const getMemoryByIdStatement = sqlite.prepare('SELECT * FROM memories WHERE id = ?')
   const getChatByIdStatement = sqlite.prepare('SELECT * FROM chats WHERE id = ?')
   const listMemoriesStatement = sqlite.prepare('SELECT * FROM memories ORDER BY updated_at DESC, id DESC')
   const listChatsStatement = sqlite.prepare('SELECT * FROM chats ORDER BY pinned DESC, updated_at DESC, id DESC')
   const insertMemoryStatement = sqlite.prepare(`
-    INSERT INTO memories (text, created_at, updated_at, feedback_score, usage_count, embedding)
-    VALUES (?, ?, ?, ?, ?, ?)
+    INSERT INTO memories (text, created_at, updated_at, feedback_score, usage_count, embedding, status_history_json)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
   `)
   const updateMemoryStatement = sqlite.prepare(`
     UPDATE memories
@@ -348,6 +393,16 @@ export function createRuntimeDatabase(options = {}) {
     WHERE id = ?
   `)
   const deleteMemoryStatement = sqlite.prepare('DELETE FROM memories WHERE id = ?')
+  const updateMemoryStatusHistoryStatement = sqlite.prepare(`
+    UPDATE memories
+    SET status_history_json = ?, updated_at = ?
+    WHERE id = ?
+  `)
+  const listMessageFeedbacksStatement = sqlite.prepare('SELECT * FROM message_feedbacks ORDER BY id DESC')
+  const insertMessageFeedbackStatement = sqlite.prepare(`
+    INSERT INTO message_feedbacks (chat_id, message_id, type, content, created_at, embedding)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `)
   const insertChatStatement = sqlite.prepare(`
     INSERT INTO chats (title, created_at, updated_at, history_chat_json, pinned)
     VALUES (?, ?, ?, ?, ?)
@@ -387,6 +442,7 @@ export function createRuntimeDatabase(options = {}) {
       feedback_score: row.feedback_score,
       usage_count: row.usage_count,
       embedding: decodeEmbedding(row.embedding),
+      statusHistory: parseStatusHistory(row.status_history_json),
     }
   }
 
@@ -471,6 +527,18 @@ export function createRuntimeDatabase(options = {}) {
     })
   }
 
+  function appendMemoryFeedbacksToChat(chatId, memoryFeedbacks) {
+    if (!chatId || memoryFeedbacks.length === 0) return null
+
+    return appendMessageToChat(chatId, {
+      id: createMessageId(),
+      author: 'system',
+      text: memoryFeedbacks.map((feedback) => feedback.detail).join('\n'),
+      memoryIds: memoryFeedbacks.map((feedback) => feedback.memoryId),
+      memoryFeedbacks,
+    })
+  }
+
   function buildMemoryScore(memory, chatText, queryEmbedding) {
     const embeddingSimilarity = cosineSimilarity(memory.embedding, queryEmbedding)
     const textSimilarity = lexicalSimilarity(memory.text, chatText)
@@ -482,6 +550,20 @@ export function createRuntimeDatabase(options = {}) {
       embeddingSimilarity,
       textSimilarity,
     }
+  }
+
+  function rankMemoryMatches(matches) {
+    return matches
+      .map((match) => {
+        const lastHistory = match.memory.statusHistory.at(-1)
+        return {
+          ...match,
+          rankingScore: -(lastHistory ? daysSince(lastHistory.at) : 0)
+            + match.memory.usage_count * 0.4
+            + match.similarity * 0.7,
+        }
+      })
+      .sort((first, second) => second.rankingScore - first.rankingScore)
   }
 
   async function generateLlmMemoryCandidates(historyChat, existingMemories) {
@@ -502,9 +584,12 @@ export function createRuntimeDatabase(options = {}) {
           'Memorias ja existentes:',
           existingMemories.join('\n') || '(nenhuma)',
           '',
-          'Crie apenas memorias novas e realmente reutilizaveis. O chat pode estar em qualquer idioma.',
+          'Crie apenas memorias novas, realmente reutilizaveis e explicitamente declaradas pelo usuario.',
           'Priorize fatos do usuario, preferencias, nomes, metas, projetos e restricoes.',
           'Tambem salve instrucoes explicitas do usuario sobre como voce deve responder em situacoes recorrentes.',
+          'Uma pergunta nao declara um fato: nunca crie memoria a partir de perguntas, mesmo se elas contiverem "eu", "meu", "gosto", "prefiro" ou uma alternativa como "ou nao".',
+          'Nao responda, complete, corrija ou suponha a resposta de uma pergunta ao extrair memorias.',
+          'Se nao houver uma declaracao explicita e duradoura na mensagem, retorne []. Em caso de duvida, retorne [].',
           'Nao infira metas permanentes, preferencias duradouras ou prioridades a partir de uma pergunta isolada, exercicio, teste, curiosidade ou pedido pontual.',
           'Nao extrapole, nao resuma demais e nao transforme um exemplo casual em perfil do usuario.',
           'Se o usuario descreveu uma regra condicional reutilizavel, preserve essa regra na memoria em vez de inventar uma abstracao mais ampla.',
@@ -524,7 +609,8 @@ export function createRuntimeDatabase(options = {}) {
   }
 
   function memoryAlreadyExists(existingTexts, candidate) {
-    return existingTexts.some((text) => lexicalSimilarity(text, candidate) > 0.74)
+    const normalizedCandidate = normalizeText(candidate)
+    return existingTexts.some((text) => normalizeText(text) === normalizedCandidate)
   }
 
   function memoryIsTooSimilar(existingMemories, candidate, candidateEmbedding) {
@@ -573,11 +659,11 @@ export function createRuntimeDatabase(options = {}) {
     if (!compactWhitespace(chatText)) return []
 
     const queryEmbedding = await llmClient.embed(chatText)
-    return listMemories()
+    const matches = listMemories()
       .map((memory) => buildMemoryScore(memory, chatText, queryEmbedding))
       .filter((item) => item.similarity > config.embeddingSimilarityThreshold)
-      .sort((first, second) => second.similarity - first.similarity)
-      .slice(0, maxMemories)
+
+    return rankMemoryMatches(matches).slice(0, maxMemories)
   }
 
   async function insertMemory(text, overrides = {}) {
@@ -588,6 +674,7 @@ export function createRuntimeDatabase(options = {}) {
     const feedbackScore = overrides.feedback_score ?? 0
     const usageCount = overrides.usage_count ?? 0
     const embedding = overrides.embedding ?? await llmClient.embed(text)
+    const statusHistory = overrides.statusHistory ?? []
     const result = insertMemoryStatement.run(
       text,
       createdAt,
@@ -595,9 +682,94 @@ export function createRuntimeDatabase(options = {}) {
       feedbackScore,
       usageCount,
       encodeEmbedding(embedding),
+      serializeStatusHistory(statusHistory),
     )
 
     return getMemory(Number(result.lastInsertRowid))
+  }
+
+  function parseMemoryFeedbacks(text) {
+    const json = text.match(/\[[\s\S]*\]/)?.[0]
+    if (!json) return []
+
+    try {
+      const parsed = JSON.parse(json)
+      if (!Array.isArray(parsed)) return []
+      return parsed.filter((item) => (
+        item
+        && Number.isInteger(item.memory_id)
+        && [-1, 0, 1].includes(item.score)
+      ))
+    }
+    catch {
+      return []
+    }
+  }
+
+  async function feedbackMemories(lastUserMessage, chatId = null) {
+    const memories = await embeddingsSearch({
+      chatText: lastUserMessage,
+      maxMemories: config.maxMemoriesPerReply,
+    })
+    if (memories.length === 0) return []
+
+    const response = await llmClient.generateText([
+      {
+        role: 'system',
+        content: 'Valide memorias com base na mensagem do usuario. Retorne apenas JSON valido.',
+      },
+      {
+        role: 'user',
+        content: [
+          'Mensagem do usuario:',
+          lastUserMessage,
+          '',
+          'Memorias:',
+          ...memories.map((memory) => `${memory.id}: ${memory.text}`),
+          '',
+          'Para cada memoria, valide a relacao dela com a mensagem do usuario.',
+          'Retorne somente JSON no formato [{"memory_id": 1, "score": 1}].',
+          'score: 1 se a mensagem confirma ou se relaciona diretamente com a memoria;',
+          'score: -1 se a mensagem contradiz a memoria;',
+          'score: 0 se nao ha evidencia suficiente.',
+        ].join('\n'),
+      },
+    ], { temperature: 0 })
+
+    const memoryIds = new Set(memories.map((memory) => memory.id))
+    const feedbacks = parseMemoryFeedbacks(response)
+      .filter((feedback) => memoryIds.has(feedback.memory_id))
+
+    const feedbackDetails = feedbacks
+      .map((feedback) => {
+        const memory = getMemory(feedback.memory_id)
+        if (!memory) return null
+
+        return {
+          memoryId: memory.id,
+          memoryText: memory.text,
+          score: feedback.score,
+          status: feedback.score > 0 ? 'positive' : feedback.score < 0 ? 'negative' : 'neutral',
+          detail: buildMemoryFeedbackDetail(memory, feedback.score),
+        }
+      })
+      .filter(Boolean)
+
+    appendMemoryFeedbacksToChat(chatId, feedbackDetails)
+
+    for (const feedback of feedbacks) {
+      if (feedback.score === 0) continue
+      const memory = getMemory(feedback.memory_id)
+      if (!memory) continue
+      const status = feedback.score > 0 ? 'positive' : 'negative'
+      updateMemoryStatusHistoryStatement.run(
+        serializeStatusHistory([...memory.statusHistory, { status, at: now() }]),
+        toIsoDay(),
+        memory.id,
+      )
+    }
+
+    return feedbacks
   }
 
   async function attemptManualMemoryCreate(text, chatId = null) {
@@ -823,28 +995,45 @@ export function createRuntimeDatabase(options = {}) {
     return { created, events }
   }
 
-  async function generateAssistantText(lastUserMessage, chatText, memoryTexts) {
+  function formatMemoriesForLlm(memories) {
+    return memories.map((memory) => [
+      `Memoria: ${memory.text}`,
+      `Historico de status: ${JSON.stringify(memory.statusHistory.slice(-10).map((item) => ({
+        status: item.status,
+        atDays: daysSince(item.at),
+      })))} `,
+    ].join('\n')).join('\n\n')
+  }
+
+  async function generateAssistantText(lastUserMessage, chatText, memories, goodMessages, badMessages) {
     return llmClient.generateText([
       {
         role: 'system',
         content: [
-           'Voce responde em portugues do Brasil.',
-           'Use as memorias como fonte de verdade para fatos pessoais, preferencias e contexto recorrente.',
-           'Se a resposta estiver nas memorias, responda diretamente usando essa informacao.',
-           'REGRA CRITICA: inclua todos os fatos recuperados que forem relevantes para a categoria da pergunta, mesmo que tenham sujeitos diferentes do sujeito perguntado.',
-           'Interprete cada memoria como um fato limitado pelo seu sujeito, relacao e valor; preserve esses tres elementos.',
-           'Nao atribua um fato de uma pessoa a outra nem infira que uma memoria sobre o usuario vale para familiares, parceiros ou outras pessoas.',
-           'Antes de responder, compare o sujeito e a categoria do fato pedido com cada fato recuperado. Se houver um fato da mesma categoria para outro sujeito, responda naturalmente com duas afirmacoes: uma informa que o fato pedido para esse sujeito e desconhecido; a outra cita o fato relacionado conhecido, identificando seu sujeito. A resposta e invalida se faltar uma dessas afirmacoes.',
-           'Nao ofereca ajuda adicional, nao faca perguntas de acompanhamento e nao mencione memorias.',
-           'Nao invente fatos ausentes nas memorias ou no chat.',
-           'Seja objetivo, util e natural.',
+          'Voce responde em portugues do Brasil.',
+          'Use as memorias como fonte de verdade para fatos pessoais, preferencias e contexto recorrente.',
+          'Se a resposta estiver nas memorias, responda diretamente usando essa informacao.',
+          'REGRA CRITICA: inclua todos os fatos recuperados que forem relevantes para a categoria da pergunta, mesmo que tenham sujeitos diferentes do sujeito perguntado.',
+          'Interprete cada memoria como um fato limitado pelo seu sujeito, relacao e valor; preserve esses tres elementos.',
+          'Nao atribua um fato de uma pessoa a outra nem infira que uma memoria sobre o usuario vale para familiares, parceiros ou outras pessoas.',
+          'Antes de responder, compare o sujeito e a categoria do fato pedido com cada fato recuperado. Se houver um fato da mesma categoria para outro sujeito, responda naturalmente com duas afirmacoes: uma informa que o fato pedido para esse sujeito e desconhecido; a outra cita o fato relacionado conhecido, identificando seu sujeito. A resposta e invalida se faltar uma dessas afirmacoes.',
+          'Nao ofereca ajuda adicional, nao faca perguntas de acompanhamento e nao mencione memorias.',
+          'Nao invente fatos ausentes nas memorias ou no chat.',
+          'Use mensagens boas como exemplos de qualidade e evite os padroes das mensagens ruins.',
+          'Seja objetivo, util e natural.',
         ].join(' '),
       },
       {
         role: 'user',
         content: [
+          'Mensagens boas:',
+          goodMessages.join('\n') || '(nenhuma)',
+          '',
+          'Mensagens ruins:',
+          badMessages.join('\n') || '(nenhuma)',
+          '',
           'Memories:',
-          memoryTexts.join('\n') || '(nenhuma memoria relevante)',
+          formatMemoriesForLlm(memories) || '(nenhuma memoria relevante)',
           '',
           'Chat recente:',
           chatText.slice(-config.maxCaracteresMemoryContext) || '(vazio)',
@@ -869,18 +1058,31 @@ export function createRuntimeDatabase(options = {}) {
     }
   }
 
-  function adjustMemoryFeedback(memoryIds, delta) {
-    if (memoryIds.length === 0 || delta === 0) return
-    const affectedIds = new Set(memoryIds)
-    const today = toIsoDay()
-    for (const memory of listMemories()) {
-      if (!affectedIds.has(memory.id)) continue
-      sqlite.prepare('UPDATE memories SET feedback_score = ?, updated_at = ? WHERE id = ?').run(
-        memory.feedback_score + delta,
-        today,
-        memory.id,
-      )
-    }
+  async function findMessageFeedbacks(type, chatText) {
+    const queryEmbedding = await llmClient.embed(chatText)
+    return listMessageFeedbacksStatement.all()
+      .map((feedback) => ({
+        type: feedback.type,
+        content: feedback.content,
+        similarity: cosineSimilarity(decodeEmbedding(feedback.embedding), queryEmbedding),
+      }))
+      .filter((feedback) => feedback.similarity > config.embeddingSimilarityThreshold && feedback.type === type)
+      .sort((first, second) => second.similarity - first.similarity)
+      .slice(0, config.maxMemoriesPerReply)
+      .map((feedback) => feedback.content)
+  }
+
+  async function saveMessageFeedback(chatId, message, rating) {
+    const type = rating === 1 ? 'good' : 'bad'
+    const embedding = await llmClient.embed(message.text)
+    insertMessageFeedbackStatement.run(
+      chatId,
+      message.id,
+      type,
+      message.text,
+      now(),
+      encodeEmbedding(embedding),
+    )
   }
 
   function stripMemoryFromChats(memoryId) {
@@ -899,6 +1101,7 @@ export function createRuntimeDatabase(options = {}) {
     if (!chat) return null
 
     const historyChat = buildHistoryChat(chat.messages)
+    await feedbackMemories(historyChat.lastUserMessage, chatId)
     await createNewMemories(historyChat, chatId)
 
     const memoryQuery = historyChat.chat_text.slice(-config.maxCaracteresMemoryContext)
@@ -906,6 +1109,10 @@ export function createRuntimeDatabase(options = {}) {
       chatText: memoryQuery,
       maxMemories: config.maxMemoriesPerReply,
     })
+    const [goodMessages, badMessages] = await Promise.all([
+      findMessageFeedbacks('good', historyChat.lastUserMessage),
+      findMessageFeedbacks('bad', historyChat.lastUserMessage),
+    ])
 
     incrementMemoryUsage(memoriesForReply.map((item) => item.memory.id))
     const refreshedChat = getChat(chatId)
@@ -917,7 +1124,9 @@ export function createRuntimeDatabase(options = {}) {
       text: await generateAssistantText(
         historyChat.lastUserMessage,
         historyChat.chat_text,
-        memoriesForReply.map((item) => item.memory.text),
+        memoriesForReply.map((item) => item.memory),
+        goodMessages,
+        badMessages,
       ),
       memoryIds: memoriesForReply.map((item) => item.memory.id),
       memoryMatches: memoriesForReply.map((item) => ({
@@ -1040,9 +1249,10 @@ export function createRuntimeDatabase(options = {}) {
       stripMemoryFromChats(memoryId)
       return { state: listState() }
     },
-    rateAssistantMessage(chatId, messageId, nextRating) {
+    async rateAssistantMessage(chatId, messageId, nextRating) {
       const chat = getChat(chatId)
       if (!chat) return { state: listState() }
+      if (nextRating !== 1 && nextRating !== -1) return { state: listState() }
 
       const message = chat.messages.find((entry) => entry.id === messageId && entry.author === 'assistant')
       if (!message) return { state: listState() }
@@ -1050,7 +1260,7 @@ export function createRuntimeDatabase(options = {}) {
       const previousRating = message.rating ?? 0
       if (previousRating === nextRating) return { state: listState() }
 
-      adjustMemoryFeedback(message.memoryIds ?? [], nextRating - previousRating)
+      await saveMessageFeedback(chatId, message, nextRating)
       writeChat({
         ...chat,
         updated_at: toIsoDay(),

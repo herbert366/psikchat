@@ -90,7 +90,7 @@ const server = http.createServer(async (request, response) => {
     const chatRatingMatch = url.pathname.match(/^\/api\/chats\/(\d+)\/messages\/([^/]+)\/rating$/)
     if (method === 'POST' && chatRatingMatch) {
       const body = await readBody(request)
-      sendJson(response, 200, runtimeDb.rateAssistantMessage(Number(chatRatingMatch[1]), chatRatingMatch[2], body.rating ?? 0))
+      sendJson(response, 200, await runtimeDb.rateAssistantMessage(Number(chatRatingMatch[1]), chatRatingMatch[2], body.rating ?? 0))
       return
     }
 

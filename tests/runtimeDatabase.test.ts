@@ -85,6 +85,22 @@ function createAntiInferenceLlmClient(): TestLlmClient {
   }
 }
 
+function createQuestionAwareLlmClient(): TestLlmClient {
+  return {
+    async embed(text: string) {
+      return buildEmbedding(text)
+    },
+    async generateText(messages: Array<{ content: string }>) {
+      const prompt = messages.map((message) => message.content).join('\n')
+      if (!prompt.includes('Retorne apenas um array JSON de strings')) return 'Resposta generica.'
+
+      return prompt.includes('Uma pergunta nao declara um fato: nunca crie memoria a partir de perguntas')
+        ? '[]'
+        : '["user preference about airplanes: No"]'
+    },
+  }
+}
+
 function createHistorySensitiveLlmClient(): TestLlmClient {
   return {
     async embed(text: string) {
@@ -121,6 +137,28 @@ function createFixedEmbeddingLlmClient(embeddingByText: Record<string, number[]>
     async generateText(messages: Array<{ content: string }>) {
       const prompt = messages.map((message) => message.content).join('\n')
       if (prompt.includes('Retorne apenas um array JSON de strings')) return '[]'
+      return 'Resposta generica.'
+    },
+  }
+}
+
+function createFeedbackAwareLlmClient() {
+  const assistantPrompts: string[] = []
+  return {
+    assistantPrompts,
+    async embed() {
+      return [1, 0, 0]
+    },
+    async generateText(messages: Array<{ content: string }>) {
+      const prompt = messages.map((message) => message.content).join('\n')
+      if (prompt.includes('Para cada memoria, valide a relacao dela com a mensagem do usuario.')) {
+        return '[{"memory_id": 1, "score": 1}]'
+      }
+      if (prompt.includes('Retorne apenas um array JSON de strings')) return '[]'
+      if (prompt.includes('Mensagem final do usuario:')) {
+        assistantPrompts.push(prompt)
+        return 'Resposta aprovada.'
+      }
       return 'Resposta generica.'
     },
   }
@@ -214,6 +252,19 @@ describe('runtimeDatabase', () => {
     expect(chat).not.toBeNull()
 
     await runtimeDb.sendUserMessage(chat!.id, 'Quanto e 2+2?')
+
+    expect(runtimeDb.memories()).toEqual([])
+  })
+
+  it('nao cria preferencia a partir de uma pergunta sobre o proprio usuario', async () => {
+    runtimeDb = createEmptyRuntimeDatabase({ llmClient: createQuestionAwareLlmClient() })
+
+    await runtimeDb.initialize()
+    const { chat } = await runtimeDb.createChat('Teste de pergunta sobre preferencia')
+
+    expect(chat).not.toBeNull()
+
+    await runtimeDb.sendUserMessage(chat!.id, 'Eu gosto de aviao ou nao?')
 
     expect(runtimeDb.memories()).toEqual([])
   })
@@ -387,7 +438,7 @@ describe('runtimeDatabase', () => {
     expect(secondChat?.messages[0]?.memoryIds).toEqual([])
   })
 
-  it('ordena memorias usadas por similaridade mesmo quando outra memoria tem mais uso e feedback', async () => {
+  it('ordena memorias por uso e similaridade conforme o novo score', async () => {
     const queryText = 'consulta de teste'
     const highSimilarityEmbedding = [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
     const lowerSimilarityEmbedding = [0.5, 0.866, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
@@ -425,7 +476,49 @@ describe('runtimeDatabase', () => {
     const { chat } = await runtimeDb.createChat('Teste de ordenacao por similaridade')
     const turn = await runtimeDb.sendUserMessage(chat!.id, queryText)
 
-    expect(turn.assistantMessage?.memoryIds).toEqual([1, 2])
-    expect(turn.assistantMessage?.memoryMatches?.map((match) => match.similarityPercent)).toEqual([100, 50])
+    expect(turn.assistantMessage?.memoryIds).toEqual([2, 1])
+    expect(turn.assistantMessage?.memoryMatches?.map((match) => match.similarityPercent)).toEqual([50, 100])
+  })
+
+  it('registra status automatico e reutiliza respostas avaliadas como exemplos', async () => {
+    const llmClient = createFeedbackAwareLlmClient()
+    runtimeDb = createEmptyRuntimeDatabase({ llmClient })
+
+    await runtimeDb.initialize()
+    await runtimeDb.createMemory('prefers concise answers')
+    const { chat } = await runtimeDb.createChat('Teste de feedbacks')
+
+    const firstTurn = await runtimeDb.sendUserMessage(chat!.id, 'prefers concise answers')
+    expect(runtimeDb.memories()[0]?.statusHistory).toHaveLength(1)
+    expect(runtimeDb.memories()[0]?.statusHistory[0]?.status).toBe('positive')
+
+    await runtimeDb.rateAssistantMessage(chat!.id, firstTurn.assistantMessage!.id, 1)
+    await runtimeDb.sendUserMessage(chat!.id, 'prefers concise answers again')
+
+    expect(llmClient.assistantPrompts.at(-1)).toContain('Mensagens boas:\nResposta aprovada.')
+    expect(llmClient.assistantPrompts.at(-1)).toContain('Historico de status: [{"status":"positive"')
+  })
+
+  it('anexa info estruturada dos feedbacks automaticos ao chat', async () => {
+    const llmClient = createFeedbackAwareLlmClient()
+    runtimeDb = createEmptyRuntimeDatabase({ llmClient })
+
+    await runtimeDb.initialize()
+    await runtimeDb.createMemory('prefers concise answers')
+    const { chat } = await runtimeDb.createChat('Teste de info de feedbacks')
+
+    await runtimeDb.sendUserMessage(chat!.id, 'prefers concise answers')
+
+    const feedbackMessage = runtimeDb.chats()[0]?.messages.find((message) => message.memoryFeedbacks?.length)
+    expect(feedbackMessage?.author).toBe('system')
+    expect(feedbackMessage?.memoryFeedbacks).toEqual([
+      {
+        memoryId: 1,
+        memoryText: 'prefers concise answers',
+        score: 1,
+        status: 'positive',
+        detail: 'Feedback positivo: memoria 1 confirmada por "prefers concise answers".',
+      },
+    ])
   })
 })

@@ -43,6 +43,7 @@ describe('App', () => {
 
     const memoryPanel = screen.getByLabelText('Memorias usadas nesta resposta')
     expect(within(memoryPanel).getByText('Comparar cenarios')).toBeInTheDocument()
+    expect(within(memoryPanel).getAllByText(/criada ha \d+ dias/)).not.toHaveLength(0)
 
     const positiveButtons = screen.getAllByRole('button', { name: 'Resposta positiva' })
     await user.click(positiveButtons.at(-1)!)
@@ -145,6 +146,19 @@ describe('App', () => {
 
     expect(negativeButtons.at(-1)).toHaveAttribute('aria-pressed', 'true')
     expect(positiveButtons.at(-1)).toHaveAttribute('aria-pressed', 'false')
+  })
+
+  it('shows a feedback info card when a user message confirms an existing memory', async () => {
+    const user = userEvent.setup()
+
+    await renderApp()
+
+    await user.type(screen.getByRole('textbox', { name: 'Mensagem' }), 'Comparar cenarios')
+    await user.click(screen.getByRole('button', { name: 'Enviar' }))
+
+    expect(await screen.findByText('Feedbacks')).toBeInTheDocument()
+    expect(await screen.findByText(/confirmou:/i)).toBeInTheDocument()
+    expect(screen.getByText('"Comparar cenarios"')).toBeInTheDocument()
   })
 
   it('supports creating, editing, searching, and deleting a manual memory through the UI', async () => {

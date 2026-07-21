@@ -7,11 +7,17 @@ export type Message = {
   rating?: -1 | 0 | 1
   memoryEvent?: MemoryEvent
   memoryEvents?: MemoryEvent[]
+  memoryFeedbacks?: MemoryFeedback[]
 }
 
 export type MemoryMatch = {
   memoryId: number
   similarityPercent: number
+}
+
+export type MemoryStatus = {
+  status: 'positive' | 'negative'
+  at: string
 }
 
 export type MemoryEvent = {
@@ -31,6 +37,14 @@ export type MemoryEvent = {
   detail: string
 }
 
+export type MemoryFeedback = {
+  memoryId: number
+  memoryText: string
+  score: -1 | 0 | 1
+  status: 'positive' | 'negative' | 'neutral'
+  detail: string
+}
+
 export type Memory = {
   id: number
   text: string
@@ -39,6 +53,7 @@ export type Memory = {
   feedback_score: number
   usage_count: number
   embedding: number[]
+  statusHistory: MemoryStatus[]
 }
 
 export type Chat = {
