@@ -85,6 +85,47 @@ function createAntiInferenceLlmClient(): TestLlmClient {
   }
 }
 
+function createHistorySensitiveLlmClient(): TestLlmClient {
+  return {
+    async embed(text: string) {
+      return buildEmbedding(text)
+    },
+    async generateText(messages: Array<{ content: string }>) {
+      const prompt = messages.map((message) => message.content).join('\n')
+      if (!prompt.includes('Retorne apenas um array JSON de strings')) {
+        return prompt.includes('gosto de ferrari') ? 'Voce gosta de Ferrari.' : 'Resposta generica.'
+      }
+
+      if (prompt.includes('meu cachorro se chama Bob') && prompt.includes('Gosto de Ferrari')) {
+        return JSON.stringify(["user dog's name: Bob", 'user likes Ferrari'])
+      }
+
+      if (prompt.includes('meu cachorro se chama Bob')) {
+        return JSON.stringify(["user dog's name: Bob"])
+      }
+
+      if (prompt.includes('Gosto de Ferrari')) {
+        return JSON.stringify(['user likes Ferrari'])
+      }
+
+      return '[]'
+    },
+  }
+}
+
+function createFixedEmbeddingLlmClient(embeddingByText: Record<string, number[]>, fallbackEmbedding: number[] = Array.from({ length: 12 }, () => 0)): TestLlmClient {
+  return {
+    async embed(text: string) {
+      return embeddingByText[text] ?? fallbackEmbedding
+    },
+    async generateText(messages: Array<{ content: string }>) {
+      const prompt = messages.map((message) => message.content).join('\n')
+      if (prompt.includes('Retorne apenas um array JSON de strings')) return '[]'
+      return 'Resposta generica.'
+    },
+  }
+}
+
 afterEach(() => {
   runtimeDb?.close()
   runtimeDb = null
@@ -109,7 +150,7 @@ describe('runtimeDatabase', () => {
     const createdMemory = runtimeDb.memories().find((memory) => memory.text === "user dog's name: Bob")
     expect(createdMemory).toBeDefined()
     const memoryEventMessage = runtimeDb.chats()[0]?.messages.find((message) => message.author === 'system')
-    expect(memoryEventMessage?.text).toContain("Memoria criada: \"user dog's name: Bob\".")
+    expect(memoryEventMessage?.text).toContain("Memoria criada: \"user dog's name: Bob\" (0% similar a \"nenhuma memoria existente\").")
 
     const secondTurn = await runtimeDb.sendUserMessage(chat!.id, 'Qual o nome do meu cachorro?')
     expect(secondTurn.assistantMessage?.text).toContain('Bob')
@@ -177,6 +218,39 @@ describe('runtimeDatabase', () => {
     expect(runtimeDb.memories()).toEqual([])
   })
 
+  it('nao rejeita memorias antigas de outra mensagem ao extrair uma memoria nova', async () => {
+    runtimeDb = createEmptyRuntimeDatabase({ llmClient: createHistorySensitiveLlmClient() })
+
+    await runtimeDb.initialize()
+    const { chat } = await runtimeDb.createChat('Teste de foco na ultima mensagem')
+
+    expect(chat).not.toBeNull()
+
+    await runtimeDb.sendUserMessage(chat!.id, 'Meu cachorro se chama Bob')
+    await runtimeDb.sendUserMessage(chat!.id, 'Gosto de Ferrari')
+
+    const systemMessages = runtimeDb.chats()[0]?.messages.filter((message) => message.author === 'system') ?? []
+    const latestSystemMessage = systemMessages.at(-1)
+
+    expect(latestSystemMessage?.text).toContain('Memoria criada: "user likes Ferrari" (0% similar a "nenhuma memoria existente").')
+    expect(latestSystemMessage?.text).not.toContain("Memoria rejeitada: ja existe algo equivalente a \"user dog's name: Bob\".")
+  })
+
+  it('inclui a similaridade da memoria mais parecida no debug de criacao automatica', async () => {
+    runtimeDb = createEmptyRuntimeDatabase({ llmClient: createMemoryCandidateLlmClient('user likes swimming pools') })
+
+    await runtimeDb.initialize()
+    await runtimeDb.createMemory('user likes praia')
+    const { chat } = await runtimeDb.createChat('Teste de debug de similaridade')
+
+    expect(chat).not.toBeNull()
+
+    await runtimeDb.sendUserMessage(chat!.id, 'Eu gosto de piscinas para nadar')
+
+    const latestSystemMessage = runtimeDb.chats()[0]?.messages.filter((message) => message.author === 'system').at(-1)
+    expect(latestSystemMessage?.text).toMatch(/Memoria criada: "user likes swimming pools" \(\d+% similar a "user likes praia"\)\./)
+  })
+
   it('registra debug quando a llm devolve uma memoria acima do limite configurado', async () => {
     runtimeDb = createEmptyRuntimeDatabase({ llmClient: createMemoryCandidateLlmClient('x'.repeat(81)) })
 
@@ -234,6 +308,41 @@ describe('runtimeDatabase', () => {
     expect(runtimeDb.memories()).toEqual([])
   })
 
+  it('mostra as duas memorias no detalhe de duplicata manual', async () => {
+    runtimeDb = createEmptyRuntimeDatabase()
+
+    await runtimeDb.initialize()
+    await runtimeDb.createMemory('User likes ships')
+    const { chat } = await runtimeDb.createChat('Teste de duplicata manual')
+
+    const result = await runtimeDb.createMemory('User likes ships', { chatId: chat!.id })
+
+    expect(result.memoryEvent.status).toBe('rejected')
+    expect(result.memoryEvent.reason).toBe('already_exists')
+    expect(result.memoryEvent.storedText).toBe('User likes ships')
+    expect(result.memoryEvent.conflictingMemoryText).toBe('User likes ships')
+    expect(result.memoryEvent.embeddingSimilarityPercent).toBe(100)
+    expect(result.memoryEvent.lexicalSimilarityPercent).toBe(100)
+    expect(result.memoryEvent.similarityPercent).toBe(100)
+    expect(result.memoryEvent.truthSimilaritySource).toBe('embedding')
+    expect(result.memoryEvent.similarityThresholdPercent).toBe(86)
+    expect(result.eventMessage?.text).toBe('Memoria rejeitada: tentou criar "User likes ships", mas ela duplica "User likes ships".')
+  })
+
+  it('mostra a memoria mais parecida no debug manual mesmo quando a similaridade arredonda para 0%', async () => {
+    runtimeDb = createEmptyRuntimeDatabase()
+
+    await runtimeDb.initialize()
+    await runtimeDb.createMemory('user likes praia')
+    const { chat } = await runtimeDb.createChat('Teste de debug manual')
+
+    const result = await runtimeDb.createMemory('user likes clouds', { chatId: chat!.id })
+
+    expect(result.memoryEvent.status).toBe('created')
+    expect(result.memoryEvent.conflictingMemoryText).toBe('user likes praia')
+    expect(result.eventMessage?.text).toMatch(/Memoria criada: "user likes clouds" \(\d+% similar a "user likes praia"\)\./)
+  })
+
   it('remove links de memoria de todos os chats que a referenciavam', async () => {
     dbPath = path.join(os.tmpdir(), `psikchat-runtime-${Date.now()}-${Math.random().toString(16).slice(2)}.sqlite`)
     runtimeDb = createRuntimeDatabase({
@@ -276,5 +385,47 @@ describe('runtimeDatabase', () => {
 
     expect(firstChat?.messages[0]?.memoryIds).toEqual([])
     expect(secondChat?.messages[0]?.memoryIds).toEqual([])
+  })
+
+  it('ordena memorias usadas por similaridade mesmo quando outra memoria tem mais uso e feedback', async () => {
+    const queryText = 'consulta de teste'
+    const highSimilarityEmbedding = [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    const lowerSimilarityEmbedding = [0.5, 0.866, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+
+    dbPath = path.join(os.tmpdir(), `psikchat-runtime-${Date.now()}-${Math.random().toString(16).slice(2)}.sqlite`)
+    runtimeDb = createRuntimeDatabase({
+      dbPath,
+      llmClient: createFixedEmbeddingLlmClient({}, highSimilarityEmbedding),
+      seedData: {
+        memories: [
+          {
+            id: 1,
+            text: 'Memoria mais parecida',
+            feedback_score: 0,
+            usage_count: 0,
+            created_at: '2026-07-20',
+            updated_at: '2026-07-20',
+            embedding: highSimilarityEmbedding,
+          },
+          {
+            id: 2,
+            text: 'Memoria menos parecida mas popular',
+            feedback_score: 5,
+            usage_count: 20,
+            created_at: '2026-07-20',
+            updated_at: '2026-07-20',
+            embedding: lowerSimilarityEmbedding,
+          },
+        ],
+        chats: [],
+      },
+    })
+
+    await runtimeDb.initialize()
+    const { chat } = await runtimeDb.createChat('Teste de ordenacao por similaridade')
+    const turn = await runtimeDb.sendUserMessage(chat!.id, queryText)
+
+    expect(turn.assistantMessage?.memoryIds).toEqual([1, 2])
+    expect(turn.assistantMessage?.memoryMatches?.map((match) => match.similarityPercent)).toEqual([100, 50])
   })
 })

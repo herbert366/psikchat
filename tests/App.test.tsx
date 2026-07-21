@@ -50,6 +50,23 @@ describe('App', () => {
   })
 
   it('persists and links the complete memory extracted from a natural user message', async () => {
+    await harness?.cleanup()
+    harness = await createSqliteAppHarness({
+      chats: [
+        {
+          id: 1,
+          title: 'Teste de memoria natural',
+          created_at: '2026-07-20',
+          updated_at: '2026-07-20',
+          pinned: 0,
+          messages: [
+            { id: 'message-1', author: 'assistant', text: 'Como posso ajudar voce hoje?' },
+          ],
+        },
+      ],
+      memories: [],
+    })
+
     const user = userEvent.setup()
 
     await renderApp()
@@ -57,8 +74,8 @@ describe('App', () => {
     await user.type(screen.getByRole('textbox', { name: 'Mensagem' }), 'O nome do meu cachorro é Billy')
     await user.click(screen.getByRole('button', { name: 'Enviar' }))
 
-    expect(await screen.findByText(/criou:/i)).toBeInTheDocument()
-    expect(screen.getByText(/user dog's name: Billy/i)).toBeInTheDocument()
+    expect((await screen.findAllByText(/criou:/i)).at(-1)).toBeInTheDocument()
+    expect(await screen.findByText(/0% similar a "nenhuma memoria existente"/i)).toBeInTheDocument()
     expect(await screen.findByText('Vou guardar que o nome do seu cachorro e Billy.')).toBeInTheDocument()
 
     const memoryButtons = screen.getAllByRole('button', { name: 'Mostrar memorias usadas' })
@@ -67,6 +84,40 @@ describe('App', () => {
     const memoryPanel = screen.getByLabelText('Memorias usadas nesta resposta')
     expect(within(memoryPanel).getByText("user dog's name: Billy")).toBeInTheDocument()
     expect(within(memoryPanel).queryByText("user dog's name:")).not.toBeInTheDocument()
+  })
+
+  it('shows rejection details only for the current extraction attempt', async () => {
+    await harness?.cleanup()
+    harness = await createSqliteAppHarness({
+      chats: [
+        {
+          id: 1,
+          title: 'Teste de rejeicao atual',
+          created_at: '2026-07-20',
+          updated_at: '2026-07-20',
+          pinned: 0,
+          messages: [
+            { id: 'message-1', author: 'assistant', text: 'Como posso ajudar voce hoje?' },
+          ],
+        },
+      ],
+      memories: [],
+    })
+
+    const user = userEvent.setup()
+
+    await renderApp()
+
+    await user.type(screen.getByRole('textbox', { name: 'Mensagem' }), 'Meu cachorro se chama Bob')
+    await user.click(screen.getByRole('button', { name: 'Enviar' }))
+    expect(await screen.findByText(/0% similar a "nenhuma memoria existente"/i)).toBeInTheDocument()
+    expect(await screen.findByText('Vou guardar que o nome do seu cachorro e Bob.')).toBeInTheDocument()
+
+    await user.type(screen.getByRole('textbox', { name: 'Mensagem' }), 'Gosto de Ferrari')
+    await user.click(screen.getByRole('button', { name: 'Enviar' }))
+
+    expect(await screen.findByText(/user likes Ferrari/i)).toBeInTheDocument()
+    expect(screen.queryByText(/memoria duplicada de "user dog's name: Bob"/i)).not.toBeInTheDocument()
   })
 
   it('ignores blank messages and supports negative feedback on assistant replies', async () => {
@@ -125,7 +176,8 @@ describe('App', () => {
     await user.type(screen.getByRole('textbox', { name: 'Nova memoria' }), 'Mapa claro')
     await user.click(screen.getByRole('button', { name: 'Salvar' }))
 
-    const updatedRow = within(table).getByText('Mapa claro').closest('tr')
+    const updatedCell = await within(table).findByText('Mapa claro')
+    const updatedRow = updatedCell.closest('tr')
     expect(updatedRow).not.toBeNull()
     await user.click(within(updatedRow!).getByRole('button', { name: 'Apagar' }))
 
@@ -143,6 +195,24 @@ describe('App', () => {
 
     expect(await screen.findByText(/rejeitou:/i)).toBeInTheDocument()
     expect(screen.getByText(/similar a "Comparar cenarios"/)).toBeInTheDocument()
+  })
+
+  it('shows both memory texts when manual memory creation is rejected as duplicate', async () => {
+    const user = userEvent.setup()
+
+    await renderApp()
+
+    await user.click(screen.getAllByRole('button', { name: 'Criar memoria' })[0])
+    await user.type(screen.getByRole('textbox', { name: 'Nova memoria' }), 'Comparar cenarios')
+    await user.click(screen.getByRole('button', { name: 'Adicionar' }))
+
+    expect(await screen.findByText(/rejeitou:/i)).toBeInTheDocument()
+    expect(screen.getByText(/tentou criar "Comparar cenarios", mas ja existe "Comparar cenarios"/i)).toBeInTheDocument()
+    expect(screen.getByText(/embedding: 100%/i)).toBeInTheDocument()
+    expect(screen.getByText(/lexical: 100%/i)).toBeInTheDocument()
+    expect(screen.getByText(/score final: 100%/i)).toBeInTheDocument()
+    expect(screen.getByText(/fonte da verdade: max = embedding/i)).toBeInTheDocument()
+    expect(screen.getByText(/limiar: 86%/i)).toBeInTheDocument()
   })
 
   it('closes the memory modal from both cancel and backdrop actions', async () => {

@@ -23,13 +23,23 @@ function BookIcon() {
 function renderMemoryEventDebug(memoryEvent: MemoryEvent) {
   switch (memoryEvent.reason) {
     case 'created':
-      return <p><span className="memory-event-emphasis success">criou:</span> "{memoryEvent.storedText}"</p>
+      return <p><span className="memory-event-emphasis success">criou:</span> "{memoryEvent.storedText}"{memoryEvent.similarityPercent != null && memoryEvent.conflictingMemoryText && <span className="memory-event-similarity"> ({memoryEvent.similarityPercent}% similar a "{memoryEvent.conflictingMemoryText}")</span>}</p>
     case 'too_long':
       return <p><span className="memory-event-emphasis danger">rejeitou:</span> {memoryEvent.characterCount}/{memoryEvent.maxCharacters} caracteres</p>
     case 'already_exists':
-      return <p><span className="memory-event-emphasis danger">rejeitou:</span> memoria duplicada de "{memoryEvent.conflictingMemoryText}"</p>
+      return (
+        <>
+          <p><span className="memory-event-emphasis danger">rejeitou:</span> tentou criar "{memoryEvent.storedText ?? memoryEvent.sourceText}", mas ja existe "{memoryEvent.conflictingMemoryText}"</p>
+          {renderSimilarityBreakdown(memoryEvent)}
+        </>
+      )
     case 'too_similar':
-      return <p><span className="memory-event-emphasis danger">rejeitou:</span> {memoryEvent.similarityPercent}% similar a "{memoryEvent.conflictingMemoryText}"</p>
+      return (
+        <>
+          <p><span className="memory-event-emphasis danger">rejeitou:</span> {memoryEvent.similarityPercent}% similar a "{memoryEvent.conflictingMemoryText}"</p>
+          {renderSimilarityBreakdown(memoryEvent)}
+        </>
+      )
     default:
       return <p><span className="memory-event-emphasis danger">rejeitou:</span> texto vazio apos normalizacao</p>
   }
@@ -49,15 +59,18 @@ function parseMemoryEventsFromSystemText(text: string): MemoryEvent[] {
     .split('\n')
     .map((line) => line.trim())
     .filter(Boolean)
-    .map((line) => {
-      const createdMatch = line.match(/^Memoria criada: "(.+)"\.$/)
-      if (createdMatch) return { action: 'create', status: 'created', reason: 'created', sourceText: createdMatch[1]!, storedText: createdMatch[1]!, detail: line }
+    .map<MemoryEvent | null>((line) => {
+      const createdMatch = line.match(/^Memoria criada: "(.+)"(?:\s*\((\d+)% similar a "(.+)"\))?\.$/)
+      if (createdMatch) return { action: 'create', status: 'created', reason: 'created', sourceText: createdMatch[1]!, storedText: createdMatch[1]!, similarityPercent: createdMatch[2] != null ? Number(createdMatch[2]) : undefined, conflictingMemoryText: createdMatch[3], detail: line }
 
       const similarMatch = line.match(/^Memoria rejeitada: (\d+)% similar a "(.+)"\.$/)
       if (similarMatch) return { action: 'create', status: 'rejected', reason: 'too_similar', sourceText: line, conflictingMemoryText: similarMatch[2]!, similarityPercent: Number(similarMatch[1]), detail: line }
 
       const tooLongMatch = line.match(/^Memoria rejeitada: (\d+)\/(\d+) caracteres\.$/)
       if (tooLongMatch) return { action: 'create', status: 'rejected', reason: 'too_long', sourceText: line, characterCount: Number(tooLongMatch[1]), maxCharacters: Number(tooLongMatch[2]), detail: line }
+
+      const duplicateDetailMatch = line.match(/^Memoria rejeitada: tentou criar "(.+)", mas ela duplica "(.+)"\.$/)
+      if (duplicateDetailMatch) return { action: 'create', status: 'rejected', reason: 'already_exists', sourceText: duplicateDetailMatch[1]!, storedText: duplicateDetailMatch[1]!, conflictingMemoryText: duplicateDetailMatch[2]!, detail: line }
 
       const duplicateMatch = line.match(/^Memoria rejeitada: ja existe (?:uma memoria igual|algo equivalente a "(.+)")\.?$/)
       if (duplicateMatch) return { action: 'create', status: 'rejected', reason: 'already_exists', sourceText: line, conflictingMemoryText: duplicateMatch[1], detail: line }
@@ -102,6 +115,18 @@ function tokenizeText(value: string) {
     .replace(/[^a-z0-9\s]/g, ' ')
     .split(/\s+/)
     .filter((token) => token.length > 2)
+}
+
+function renderSimilarityBreakdown(memoryEvent: MemoryEvent) {
+  if (memoryEvent.embeddingSimilarityPercent == null && memoryEvent.lexicalSimilarityPercent == null && memoryEvent.similarityPercent == null) return null
+
+  return (
+    <p className="memory-event-similarity">
+      embedding: {memoryEvent.embeddingSimilarityPercent ?? 0}% · lexical: {memoryEvent.lexicalSimilarityPercent ?? 0}% · score final: {memoryEvent.similarityPercent ?? 0}%
+      {memoryEvent.truthSimilaritySource && ` (fonte da verdade: max = ${memoryEvent.truthSimilaritySource})`}
+      {memoryEvent.similarityThresholdPercent != null && ` · limiar: ${memoryEvent.similarityThresholdPercent}%`}
+    </p>
+  )
 }
 
 function lexicalSimilarity(first: string, second: string) {
@@ -626,9 +651,24 @@ function App({ dataSource = appDataSource }: AppProps) {
                 <p className="chat-status error" role="alert">{appError}</p>
               )}
               {visibleMessages.map((item) => {
-                const relatedMemories = (item.memoryIds ?? [])
-                  .map((memoryId) => memoriesById.get(memoryId))
-                  .filter((memoryItem): memoryItem is Memory => Boolean(memoryItem))
+                const relatedMemories = (item.memoryMatches?.length
+                  ? item.memoryMatches.map((match) => {
+                      const memoryItem = memoriesById.get(match.memoryId)
+                      if (!memoryItem) return null
+                      return {
+                        ...memoryItem,
+                        similarityPercent: match.similarityPercent,
+                      }
+                    })
+                  : (item.memoryIds ?? []).map((memoryId) => {
+                      const memoryItem = memoriesById.get(memoryId)
+                      if (!memoryItem) return null
+                      return {
+                        ...memoryItem,
+                        similarityPercent: null,
+                      }
+                    }))
+                  .filter((memoryItem): memoryItem is Memory & { similarityPercent: number | null } => Boolean(memoryItem))
 
                 return (
                   <article className={`message ${item.author}`} key={item.id}>
@@ -672,8 +712,13 @@ function App({ dataSource = appDataSource }: AppProps) {
                             {relatedMemories.length > 0 ? (
                               <ul className="message-memory-list">
                                 {relatedMemories.map((memoryItem) => (
-                                  <li className="message-memory-item" key={memoryItem.id}>
-                                    <span className="message-memory-text">{memoryItem.text}</span>
+                                 <li className="message-memory-item" key={memoryItem.id}>
+                                    <span className="message-memory-content">
+                                      <span className="message-memory-text">{memoryItem.text}</span>
+                                      {memoryItem.similarityPercent !== null && (
+                                        <span className="message-memory-similarity">{memoryItem.similarityPercent}% similar a query</span>
+                                      )}
+                                    </span>
                                     <span className="message-memory-actions">
                                       <button type="button" aria-label="Apagar memoria" onClick={() => deleteMemory(memoryItem.id)}>
                                         <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">

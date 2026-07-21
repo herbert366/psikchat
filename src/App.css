@@ -363,6 +363,11 @@ button {
   color: #ff5f5f;
 }
 
+.memory-event-similarity {
+  color: #94938f;
+  font-size: 0.9em;
+}
+
 .message.typing {
   min-width: 72px;
   padding: 14px 16px;
@@ -470,6 +475,19 @@ button {
 .message-memory-text {
   flex: 1;
   min-width: 0;
+}
+
+.message-memory-content {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.message-memory-similarity {
+  color: #c8c8c8;
+  font-size: 13px;
 }
 
 .message-memory-actions {

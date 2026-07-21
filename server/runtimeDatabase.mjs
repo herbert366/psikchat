@@ -7,11 +7,14 @@ const DEFAULT_APP_CONFIG = {
   maxCaracteresMemoryToCreateMemory: 500,
   maxCaracteresMemoryContext: 500,
   maxMemoriesPerReply: 20,
-  embeddingSimilarityThreshold: 0.18,
+  embeddingSimilarityThreshold: 0.4,
   similarityThresholdToCreate: 0.86,
 }
 
+const APP_CONFIG_PATH = path.resolve(process.cwd(), 'src', 'config.ts')
+
 const DEFAULT_SEED_DATA = { chats: [], memories: [] }
+const NO_SIMILAR_MEMORY_LABEL = 'nenhuma memoria existente'
 
 function normalizeText(value) {
   return value
@@ -22,6 +25,18 @@ function normalizeText(value) {
 
 function compactWhitespace(value) {
   return value.replace(/\s+/g, ' ').trim()
+}
+
+function loadSourceAppConfig() {
+  try {
+    const source = fs.readFileSync(APP_CONFIG_PATH, 'utf8')
+    const match = source.match(/export const APP_CONFIG = (\{[\s\S]*?\}) as const/)
+    if (!match) return {}
+    return Function(`"use strict"; return (${match[1]})`)()
+  }
+  catch {
+    return {}
+  }
 }
 
 function normalizeMemoryText(value) {
@@ -115,6 +130,7 @@ function hydrateMessage(message) {
     ...message,
     rating: message.rating ?? 0,
     memoryIds: message.memoryIds ?? [],
+    memoryMatches: message.memoryMatches ?? [],
   }
 }
 
@@ -194,6 +210,20 @@ function buildMemoryEvent(sourceText, partial = {}) {
   }
 }
 
+function buildDuplicateMemoryDetail(attemptedText, conflictingMemoryText) {
+  return `Memoria rejeitada: tentou criar "${attemptedText}", mas ela duplica "${conflictingMemoryText}".`
+}
+
+function buildSimilarityDiagnostics(score, threshold) {
+  return {
+    embeddingSimilarityPercent: toPercent(score.embeddingSimilarity),
+    lexicalSimilarityPercent: toPercent(score.textSimilarity),
+    similarityPercent: toPercent(score.similarity),
+    truthSimilaritySource: score.embeddingSimilarity >= score.textSimilarity ? 'embedding' : 'lexical',
+    similarityThresholdPercent: toPercent(threshold),
+  }
+}
+
 function encodeEmbedding(embedding) {
   return Buffer.from(JSON.stringify(embedding), 'utf8')
 }
@@ -267,7 +297,7 @@ function createOpenRouterClient({
 }
 
 export function createRuntimeDatabase(options = {}) {
-  const config = { ...DEFAULT_APP_CONFIG, ...(options.config ?? {}) }
+  const config = { ...DEFAULT_APP_CONFIG, ...loadSourceAppConfig(), ...(options.config ?? {}) }
   const seedData = options.seedData ?? DEFAULT_SEED_DATA
   const dbPath = path.resolve(options.dbPath ?? path.join(process.cwd(), 'data', 'psikchat.sqlite'))
   fs.mkdirSync(path.dirname(dbPath), { recursive: true })
@@ -444,19 +474,20 @@ export function createRuntimeDatabase(options = {}) {
   function buildMemoryScore(memory, chatText, queryEmbedding) {
     const embeddingSimilarity = cosineSimilarity(memory.embedding, queryEmbedding)
     const textSimilarity = lexicalSimilarity(memory.text, chatText)
-    const recencyScore = 1 / (daysSince(memory.created_at) + 1)
-    const usageScore = memory.usage_count / 10
-    const feedbackScore = memory.feedback_score / 5
+    const similarity = Math.max(embeddingSimilarity, textSimilarity)
 
     return {
       memory,
-      similarity: Math.max(embeddingSimilarity, textSimilarity),
-      score: embeddingSimilarity * 3 + textSimilarity * 2 + recencyScore + usageScore + feedbackScore,
+      similarity,
+      embeddingSimilarity,
+      textSimilarity,
     }
   }
 
   async function generateLlmMemoryCandidates(historyChat, existingMemories) {
-    const recentChat = historyChat.chat_text.slice(-config.maxCaracteresMemoryToCreateMemory)
+    const lastUserMessage = compactWhitespace(historyChat.lastUserMessage).slice(-config.maxCaracteresMemoryToCreateMemory)
+    if (!lastUserMessage) return []
+
     const response = await llmClient.generateText([
       {
         role: 'system',
@@ -465,8 +496,8 @@ export function createRuntimeDatabase(options = {}) {
       {
         role: 'user',
         content: [
-          'Chat recente:',
-          recentChat || '(vazio)',
+          'Ultima mensagem do usuario:',
+          lastUserMessage || '(vazia)',
           '',
           'Memorias ja existentes:',
           existingMemories.join('\n') || '(nenhuma)',
@@ -532,6 +563,11 @@ export function createRuntimeDatabase(options = {}) {
   }
 
   async function embeddingsSearch(input) {
+    const matches = await embeddingsSearchWithScores(input)
+    return matches.map((item) => item.memory)
+  }
+
+  async function embeddingsSearchWithScores(input) {
     const chatText = input.chatText ?? input.chat_text ?? ''
     const maxMemories = input.maxMemories ?? input.max_memories ?? config.maxMemoriesPerReply
     if (!compactWhitespace(chatText)) return []
@@ -539,10 +575,9 @@ export function createRuntimeDatabase(options = {}) {
     const queryEmbedding = await llmClient.embed(chatText)
     return listMemories()
       .map((memory) => buildMemoryScore(memory, chatText, queryEmbedding))
-      .filter((item) => item.similarity >= config.embeddingSimilarityThreshold)
-      .sort((first, second) => second.score - first.score)
+      .filter((item) => item.similarity > config.embeddingSimilarityThreshold)
+      .sort((first, second) => second.similarity - first.similarity)
       .slice(0, maxMemories)
-      .map((item) => item.memory)
   }
 
   async function insertMemory(text, overrides = {}) {
@@ -607,15 +642,18 @@ export function createRuntimeDatabase(options = {}) {
     }
 
     const currentMemories = listMemories()
+    const candidateEmbedding = await llmClient.embed(normalizedText)
     const exactDuplicate = currentMemories.find((memory) => normalizeText(memory.text) === normalizeText(normalizedText))
     if (exactDuplicate) {
+      const exactDuplicateScore = buildMemoryScore(exactDuplicate, normalizedText, candidateEmbedding)
       const memoryEvent = {
         ...buildMemoryEvent(sourceText, baseEvent),
         status: 'rejected',
         reason: 'already_exists',
         storedText: normalizedText,
         conflictingMemoryText: exactDuplicate.text,
-        detail: 'Memoria rejeitada: ja existe uma memoria igual.',
+        ...buildSimilarityDiagnostics(exactDuplicateScore, config.similarityThresholdToCreate),
+        detail: buildDuplicateMemoryDetail(normalizedText, exactDuplicate.text),
       }
 
       const eventMessage = appendMemoryEventsToChat(chatId, [memoryEvent])
@@ -625,27 +663,23 @@ export function createRuntimeDatabase(options = {}) {
         memoryEvent,
       }
     }
-
-    const candidateEmbedding = await llmClient.embed(normalizedText)
-    let bestMatch = null
-    let bestSimilarity = 0
+    let bestScore = null
     for (const memory of currentMemories) {
-      const similarity = buildMemoryScore(memory, normalizedText, candidateEmbedding).similarity
-      if (similarity > bestSimilarity) {
-        bestSimilarity = similarity
-        bestMatch = memory
+      const score = buildMemoryScore(memory, normalizedText, candidateEmbedding)
+      if (!bestScore || score.similarity > bestScore.similarity) {
+        bestScore = score
       }
     }
 
-    if (bestMatch && bestSimilarity >= config.similarityThresholdToCreate) {
+    if (bestScore && bestScore.similarity >= config.similarityThresholdToCreate) {
       const memoryEvent = {
         ...buildMemoryEvent(sourceText, baseEvent),
         status: 'rejected',
         reason: 'too_similar',
         storedText: normalizedText,
-        conflictingMemoryText: bestMatch.text,
-        similarityPercent: toPercent(bestSimilarity),
-        detail: `Memoria rejeitada: ${toPercent(bestSimilarity)}% similar a "${bestMatch.text}".`,
+        conflictingMemoryText: bestScore.memory.text,
+        ...buildSimilarityDiagnostics(bestScore, config.similarityThresholdToCreate),
+        detail: `Memoria rejeitada: ${toPercent(bestScore.similarity)}% similar a "${bestScore.memory.text}".`,
       }
 
       const eventMessage = appendMemoryEventsToChat(chatId, [memoryEvent])
@@ -657,13 +691,17 @@ export function createRuntimeDatabase(options = {}) {
     }
 
     const createdMemory = await insertMemory(normalizedText, { embedding: candidateEmbedding })
+    const createdPercent = toPercent(bestScore?.similarity ?? 0)
+    const createdConflictText = bestScore?.memory.text ?? NO_SIMILAR_MEMORY_LABEL
     const memoryEvent = {
       ...buildMemoryEvent(sourceText, baseEvent),
       status: 'created',
       reason: 'created',
       storedText: createdMemory?.text ?? normalizedText,
       memoryId: createdMemory?.id,
-      detail: `Memoria criada: "${createdMemory?.text ?? normalizedText}".`,
+      conflictingMemoryText: createdConflictText,
+      similarityPercent: createdPercent,
+      detail: `Memoria criada: "${createdMemory?.text ?? normalizedText}" (${createdPercent}% similar a "${createdConflictText}").`,
     }
 
     const eventMessage = appendMemoryEventsToChat(chatId, [memoryEvent])
@@ -705,9 +743,13 @@ export function createRuntimeDatabase(options = {}) {
   }
 
   async function createNewMemories(historyChat, chatId = null) {
-    const recentChat = historyChat.chat_text.slice(-config.maxCaracteresMemoryToCreateMemory)
+    const lastUserMessage = compactWhitespace(historyChat.lastUserMessage).slice(-config.maxCaracteresMemoryToCreateMemory)
+    if (!lastUserMessage) {
+      return { created: [], events: [] }
+    }
+
     const relatedMemories = await embeddingsSearch({
-      chatText: recentChat,
+      chatText: lastUserMessage,
       maxMemories: config.maxMemoriesPerReply,
     })
 
@@ -729,25 +771,24 @@ export function createRuntimeDatabase(options = {}) {
       const normalizedCandidate = normalizeMemoryText(candidate)
       if (!normalizedCandidate) continue
 
+      const candidateEmbedding = await llmClient.embed(normalizedCandidate)
       const duplicatePool = [...listMemories(), ...created]
       const duplicateMatch = duplicatePool.find((memory) => memoryAlreadyExists([memory.text], normalizedCandidate))
       if (duplicateMatch) {
+        const duplicateScore = buildMemoryScore(duplicateMatch, normalizedCandidate, candidateEmbedding)
         events.push(buildMemoryEvent(candidate, {
           status: 'rejected',
           reason: 'already_exists',
           storedText: normalizedCandidate,
           conflictingMemoryText: duplicateMatch.text,
-          detail: `Memoria rejeitada: ja existe algo equivalente a "${duplicateMatch.text}".`,
+          ...buildSimilarityDiagnostics(duplicateScore, config.similarityThresholdToCreate),
+          detail: buildDuplicateMemoryDetail(normalizedCandidate, duplicateMatch.text),
         }))
         continue
       }
 
-      const candidateEmbedding = await llmClient.embed(normalizedCandidate)
       const similarMatch = [...listMemories(), ...created]
-        .map((memory) => ({
-          memory,
-          similarity: buildMemoryScore(memory, normalizedCandidate, candidateEmbedding).similarity,
-        }))
+        .map((memory) => buildMemoryScore(memory, normalizedCandidate, candidateEmbedding))
         .sort((first, second) => second.similarity - first.similarity)[0]
 
       if (similarMatch && similarMatch.similarity >= config.similarityThresholdToCreate) {
@@ -756,7 +797,7 @@ export function createRuntimeDatabase(options = {}) {
           reason: 'too_similar',
           storedText: normalizedCandidate,
           conflictingMemoryText: similarMatch.memory.text,
-          similarityPercent: toPercent(similarMatch.similarity),
+          ...buildSimilarityDiagnostics(similarMatch, config.similarityThresholdToCreate),
           detail: `Memoria rejeitada: ${toPercent(similarMatch.similarity)}% similar a "${similarMatch.memory.text}".`,
         }))
         continue
@@ -765,12 +806,16 @@ export function createRuntimeDatabase(options = {}) {
       const memory = await insertMemory(normalizedCandidate, { embedding: candidateEmbedding })
       if (!memory) continue
       created.push(memory)
+      const createdPercent = toPercent(similarMatch?.similarity ?? 0)
+      const createdConflictText = similarMatch?.memory.text ?? NO_SIMILAR_MEMORY_LABEL
       events.push(buildMemoryEvent(candidate, {
         status: 'created',
         reason: 'created',
         storedText: memory.text,
         memoryId: memory.id,
-        detail: `Memoria criada: "${memory.text}".`,
+        conflictingMemoryText: createdConflictText,
+        similarityPercent: createdPercent,
+        detail: `Memoria criada: "${memory.text}" (${createdPercent}% similar a "${createdConflictText}").`,
       }))
     }
 
@@ -843,6 +888,7 @@ export function createRuntimeDatabase(options = {}) {
       const nextMessages = chat.messages.map((message) => ({
         ...message,
         memoryIds: (message.memoryIds ?? []).filter((currentId) => currentId !== memoryId),
+        memoryMatches: (message.memoryMatches ?? []).filter((match) => match.memoryId !== memoryId),
       }))
       writeChat({ ...chat, messages: nextMessages })
     }
@@ -856,12 +902,12 @@ export function createRuntimeDatabase(options = {}) {
     await createNewMemories(historyChat, chatId)
 
     const memoryQuery = historyChat.chat_text.slice(-config.maxCaracteresMemoryContext)
-    const memoriesForReply = await embeddingsSearch({
+    const memoriesForReply = await embeddingsSearchWithScores({
       chatText: memoryQuery,
       maxMemories: config.maxMemoriesPerReply,
     })
 
-    incrementMemoryUsage(memoriesForReply.map((memory) => memory.id))
+    incrementMemoryUsage(memoriesForReply.map((item) => item.memory.id))
     const refreshedChat = getChat(chatId)
     if (!refreshedChat) return null
 
@@ -871,9 +917,13 @@ export function createRuntimeDatabase(options = {}) {
       text: await generateAssistantText(
         historyChat.lastUserMessage,
         historyChat.chat_text,
-        memoriesForReply.map((memory) => memory.text),
+        memoriesForReply.map((item) => item.memory.text),
       ),
-      memoryIds: memoriesForReply.map((memory) => memory.id),
+      memoryIds: memoriesForReply.map((item) => item.memory.id),
+      memoryMatches: memoriesForReply.map((item) => ({
+        memoryId: item.memory.id,
+        similarityPercent: toPercent(item.similarity),
+      })),
       rating: 0,
     }
 

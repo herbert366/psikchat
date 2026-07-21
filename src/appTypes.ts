@@ -3,9 +3,15 @@ export type Message = {
   author: 'assistant' | 'user' | 'system'
   text: string
   memoryIds?: number[]
+  memoryMatches?: MemoryMatch[]
   rating?: -1 | 0 | 1
   memoryEvent?: MemoryEvent
   memoryEvents?: MemoryEvent[]
+}
+
+export type MemoryMatch = {
+  memoryId: number
+  similarityPercent: number
 }
 
 export type MemoryEvent = {
@@ -16,6 +22,10 @@ export type MemoryEvent = {
   storedText?: string
   conflictingMemoryText?: string
   similarityPercent?: number
+  embeddingSimilarityPercent?: number
+  lexicalSimilarityPercent?: number
+  truthSimilaritySource?: 'embedding' | 'lexical'
+  similarityThresholdPercent?: number
   maxCharacters?: number
   characterCount?: number
   detail: string

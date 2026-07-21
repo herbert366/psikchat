@@ -51,6 +51,10 @@ function buildMemoryCandidates(prompt: string) {
     candidates.push('Prefere listas')
   }
 
+  if (normalizedPrompt.includes('gosto de ferrari')) {
+    candidates.push('user likes Ferrari')
+  }
+
   if (
     normalizedPrompt.includes('quando eu falar de sentimentos')
     && normalizedPrompt.includes('me faca uma pergunta no final')
@@ -81,6 +85,10 @@ function buildAssistantReply(prompt: string) {
 
   if (normalizedPrompt.includes('o nome do meu cachorro e billy')) {
     return 'Vou guardar que o nome do seu cachorro e Billy.'
+  }
+
+  if (normalizedPrompt.includes('gosto de ferrari')) {
+    return 'Voce gosta de Ferrari.'
   }
 
   if (normalizedPrompt.includes('rag')) {
